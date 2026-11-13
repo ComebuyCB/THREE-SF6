@@ -1,0 +1,61 @@
+html, body { height: 100%; margin: 0; }
+
+body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-ui, sans-serif; }
+
+.index_stage { position: fixed; inset: 0; }
+
+.index_loading { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .7); transition: opacity .3s ease; }
+.index_loading.is_hide { opacity: 0; pointer-events: none; }
+.index_loading-text { margin: 0; font-size: 18px; }
+
+.index_hint { position: fixed; bottom: 12px; left: 12px; z-index: 5; padding: 6px 12px; background: rgba(0, 0, 0, .5); border-radius: 4px; }
+.index_hint-text { margin: 0; font-size: 13px; }
+
+/* 幀數表：顏色仿快打旋風 6 */
+.index_frameMeter { --frame-startup: #3ddc6b; --frame-active: #ff3b4e; --frame-recovery: #3a7bff; --frame-stun: #ffd23f; --frame-block: #34d1e0; --frame-dash: #9aa3b5; --frame-down: #b07cff; --frame-empty: rgba(255, 255, 255, .08); position: fixed; top: 12px; left: 12px; right: 270px; z-index: 5; padding: 8px 10px; background: rgba(0, 0, 0, .55); border-radius: 4px; font-size: 12px; }
+.index_frameMeter-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.index_frameMeter-row > ._label { flex: none; width: 20px; font-weight: 700; }
+.index_frameMeter-cells { display: flex; flex: 1; gap: 1px; min-width: 0; }
+.index_frameMeter-cell { flex: 1 1 0; min-width: 0; height: 14px; background: var(--frame-empty); }
+.index_frameMeter-cell.is_startup { background: var(--frame-startup); }
+.index_frameMeter-cell.is_active { background: var(--frame-active); }
+.index_frameMeter-cell.is_recovery { background: var(--frame-recovery); }
+.index_frameMeter-cell.is_stun { background: var(--frame-stun); }
+.index_frameMeter-cell.is_block { background: var(--frame-block); }
+.index_frameMeter-cell.is_dash { background: var(--frame-dash); }
+.index_frameMeter-cell.is_down { background: var(--frame-down); }
+.index_frameMeter-ruler { display: flex; flex: 1; min-width: 0; height: 14px; }
+.index_frameMeter-ruler > ._mark { flex: 1 1 0; min-width: 0; padding-left: 1px; border-left: 1px solid rgba(255, 255, 255, .35); font-size: 10px; line-height: 14px; color: rgba(255, 255, 255, .75); font-variant-numeric: tabular-nums; }
+.index_frameMeter-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-top: 6px; }
+.index_frameMeter-foot > ._info { margin: 0; font-variant-numeric: tabular-nums; }
+.index_frameMeter-legend { display: flex; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.index_frameMeter-legend > ._item { display: flex; align-items: center; gap: 4px; }
+.index_frameMeter-legend > ._item::before { content: ''; width: 10px; height: 10px; background: var(--frame-empty); }
+.index_frameMeter-legend > ._item.is_startup::before { background: var(--frame-startup); }
+.index_frameMeter-legend > ._item.is_active::before { background: var(--frame-active); }
+.index_frameMeter-legend > ._item.is_recovery::before { background: var(--frame-recovery); }
+.index_frameMeter-legend > ._item.is_stun::before { background: var(--frame-stun); }
+.index_frameMeter-legend > ._item.is_block::before { background: var(--frame-block); }
+.index_frameMeter-legend > ._item.is_dash::before { background: var(--frame-dash); }
+.index_frameMeter-legend > ._item.is_down::before { background: var(--frame-down); }
+
+/* 窄螢幕時控制台會蓋住上方，幀數表改放到下方提示文字上面 */
+@media (max-width: 767px) {
+  .index_frameMeter { top: auto; right: 12px; bottom: 52px; }
+}
+
+/* 人物腳底的即時座標：位置由 JS 寫入 transform */
+.index_coord { position: fixed; top: 0; left: 0; z-index: 4; margin: 0; padding: 2px 6px; background: rgba(0, 0, 0, .6); border-radius: 3px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; translate: -50% 8px; }
+.index_coord.is_hide { display: none; }
+
+/* 連段數：P1 顯示在畫面左側 */
+.index_combo { position: fixed; top: 38%; left: 24px; z-index: 5; display: flex; flex-direction: column; align-items: flex-start; line-height: 1; color: #ffd23f; text-shadow: 0 2px 0 #b3361f, 0 0 12px rgba(255, 120, 40, .6); opacity: 0; transition: opacity .3s ease; pointer-events: none; }
+.index_combo.is_show { opacity: 1; }
+.index_combo.is_pop { animation: index_comboPop .18s ease-out; }
+.index_combo > ._num { font-size: 64px; font-weight: 900; font-style: italic; }
+.index_combo > ._text { font-size: 20px; font-weight: 800; font-style: italic; letter-spacing: .1em; }
+
+@keyframes index_comboPop {
+  0% { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}

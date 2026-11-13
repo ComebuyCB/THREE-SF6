@@ -1,0 +1,7 @@
+# 瀏覽器測試工具產生的 log
+.playwright-mcp/
+
+# 系統檔
+.DS_Store
+Thumbs.db
+desktop.ini

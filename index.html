@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fighter Viewer</title>
+  <link rel="stylesheet" href="src/common/css/index.css">
+
+  <!-- importmap：讓 import 'three' 指向 CDN，不需打包工具 -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <main id="stage" class="index_stage"></main>
+
+  <div id="loading" class="index_loading">
+    <p class="index_loading-text">載入中…<span id="loadingProgress">0%</span></p>
+  </div>
+
+  <section id="frameMeter" class="index_frameMeter" aria-label="幀數表">
+    <div class="index_frameMeter-row">
+      <span class="_label">F</span>
+      <div id="frameMeterRuler" class="index_frameMeter-ruler"></div>
+    </div>
+    <div class="index_frameMeter-row">
+      <span class="_label">P1</span>
+      <div id="frameMeterP1" class="index_frameMeter-cells"></div>
+    </div>
+    <div class="index_frameMeter-row">
+      <span class="_label">P2</span>
+      <div id="frameMeterP2" class="index_frameMeter-cells"></div>
+    </div>
+    <div class="index_frameMeter-foot">
+      <p id="frameMeterInfo" class="_info">出招後開始記錄</p>
+      <ul class="index_frameMeter-legend">
+        <li class="_item is_startup">前搖</li>
+        <li class="_item is_active">攻擊判定</li>
+        <li class="_item is_recovery">收招</li>
+        <li class="_item is_stun">受擊硬直</li>
+        <li class="_item is_block">防禦硬直</li>
+        <li class="_item is_dash">衝刺</li>
+        <li class="_item is_down">倒地無敵</li>
+      </ul>
+    </div>
+  </section>
+
+  <p id="coordP1" class="index_coord"></p>
+  <p id="coordP2" class="index_coord"></p>
+
+  <div id="comboP1" class="index_combo" aria-live="polite">
+    <span class="_num">0</span>
+    <span class="_text">HITS</span>
+  </div>
+
+  <aside class="index_hint">
+    <p class="index_hint-text">P1：A / D 前進後退（按後 = 防禦）　W 跳　連按兩下 A / D 衝刺　數字鍵 8 輕攻擊、9 重攻擊、7 絕招　P2：木樁　滑鼠：旋轉 / 縮放鏡頭</p>
+  </aside>
+
+  <script type="module" src="src/common/js/main.js"></script>
+</body>
+</html>
