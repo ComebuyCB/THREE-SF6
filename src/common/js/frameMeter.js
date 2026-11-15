@@ -1,4 +1,6 @@
-const TYPES = ['startup', 'active', 'recovery', 'stun', 'block', 'dash', 'down']
+// invincible：絕招開頭的無敵幀，顯示跟倒地一樣的白色，但算在招式的全體幀數裡
+const TYPES = ['startup', 'active', 'recovery', 'stun', 'block', 'dash', 'down', 'invincible', 'prejump', 'air', 'landing']
+const JUMP_TYPES = ['prejump', 'air', 'landing'] // 跳躍：起跳前 / 滯空 / 落地硬直，另外統計
 const RULER_STEP = 10 // 刻度每幾格標一次幀數
 
 /**
@@ -63,7 +65,7 @@ export class FrameMeter {
 
   /**
    * 記錄 1 幀
-   * @param {Array<'startup' | 'active' | 'recovery' | 'stun' | 'block' | 'dash' | 'down' | null>} types 依 rows 順序（P1、P2）
+   * @param {Array<'startup' | 'active' | 'recovery' | 'stun' | 'block' | 'dash' | 'down' | 'invincible' | 'prejump' | 'air' | 'landing' | null>} types 依 rows 順序（P1、P2）
    */
   record(types) {
     const isBusy = types.some(Boolean)
@@ -79,7 +81,7 @@ export class FrameMeter {
     if (!this.isRecording) {
       this._clearRange(0, this.length)
       this.index = 0
-      this.stats = this.rows.map(() => ({ firstActive: -1, activeCount: 0, attackFrames: 0, lastBusy: -1 }))
+      this.stats = this.rows.map(() => ({ attackStart: -1, firstActive: -1, activeCount: 0, attackFrames: 0, lastBusy: -1, prejump: 0, air: 0, landing: 0 }))
       this.isRecording = true
     }
 
@@ -121,8 +123,14 @@ export class FrameMeter {
     if (!type) return
 
     stat.lastBusy = this.index
+    if (JUMP_TYPES.includes(type)) {
+      stat[type]++
+      return
+    }
     if (type === 'stun' || type === 'block' || type === 'dash' || type === 'down') return
 
+    // 空中攻擊時，發生從出招那幀算起，不含前面的跳躍
+    if (stat.attackStart < 0) stat.attackStart = this.index
     stat.attackFrames++
     if (type === 'active') {
       if (stat.firstActive < 0) stat.firstActive = this.index
@@ -137,9 +145,13 @@ export class FrameMeter {
 
     if (p1.attackFrames) {
       // 快打的「發生」是第一個攻擊判定幀的編號，所以前搖 5 幀 = 發生 6F
-      // 落地硬直等沒有攻擊判定的動作只顯示全體
-      if (p1.firstActive >= 0) parts.push(`發生 ${p1.firstActive + 1}F`, `持續 ${p1.activeCount}F`)
+      if (p1.firstActive >= 0) parts.push(`發生 ${p1.firstActive - p1.attackStart + 1}F`, `持續 ${p1.activeCount}F`)
       parts.push(`全體 ${p1.attackFrames}F`)
+    }
+
+    if (p1.prejump || p1.air || p1.landing) {
+      parts.push(`起跳 ${p1.prejump}F`, `滯空 ${p1.air}F`)
+      if (p1.landing) parts.push(`落地 ${p1.landing}F`)
     }
 
     if (p1.lastBusy >= 0 && p2.lastBusy >= 0) {

@@ -212,7 +212,11 @@ export class MixamoLoader {
     const times = Float32Array.from(hipsRotation.times)
 
     const mixer = new THREE.AnimationMixer(object)
-    mixer.clipAction(rotationClip).play()
+    // 只播一次並停在結尾：預設的循環播放在 t = 動畫長度時會繞回第 0 幀，最後一幀會取到開頭的姿勢（Rokoko 檔是 T 字形）
+    const action = mixer.clipAction(rotationClip)
+    action.setLoop(THREE.LoopOnce, 1)
+    action.clampWhenFinished = true
+    action.play()
     const frames = Object.fromEntries(Object.keys(bones).map(name => [name, new Float32Array(times.length * 4)]))
     const q = new THREE.Quaternion()
 
