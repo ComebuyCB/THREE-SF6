@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js'
+import { OBB } from 'three/addons/math/OBB.js'
 
 // 遊戲邏輯固定 60 幀 / 秒，幀數表與招式數據都以此為單位
 export const FPS = 60
@@ -62,6 +63,7 @@ export class Fighter {
       characterHeight: 1.75,
       moveSpeed: 2, // 公尺 / 秒
       backSpeedRate: 0.8, // 後退速度比例
+      walkAnimSpeed: 1, // 走路動畫播放倍率；負數 = 倒著播（換上的走路動畫原本是往後走時設成負數）
       pushHalfWidth: 0.25, // 推擠範圍半寬（公尺）
       fadeTime: 0.1,
       /**
@@ -84,6 +86,8 @@ export class Fighter {
        *   第一段之前 = 前搖、段與段之間 = 空檔（顯示成前搖）、最後一段結束後 = 收招
        * blockStun：被防禦時對手的防禦硬直幀數；沒填用人物的 blockStun
        * hitRadius：攻擊判定球半徑（公尺）；沒填用人物的 hitRadius
+       * hitLimb：{ from, to, width, extend } 攻擊判定改成沿著肢體方向的長方體（取代判定球）
+       *   從 from 骨頭到 to 骨頭，再往外延伸 extend 公尺；截面寬 width 公尺
        * sounds：招式音效 [{ name, frame, delay }]：name = main.js sounds 的 key；frame = 第幾幀播（幀數表編號，沒填 = 1）；delay = 再延遲幾秒（現實時間）
        *   絕招的第 1 幀 = 按下絕招的瞬間（鏡頭演出開始、畫面定格時）
        * lockDistance：吸附時對手與攻擊方的距離（公尺，兩人中心）；沒填 = 推擠框剛好貼齊
@@ -106,34 +110,45 @@ export class Fighter {
        * rootMotion：攻擊判定期間套用動畫本身的前後位移
        * launch：最後一段命中時把對手打飛（飛走 → 起身）
        * isSuper：絕招，出招時有鏡頭演出；GUI「招式選取」只列出絕招
+       * animStart：絕招從演出的哪個時間點開始播（之前停在第 1 幀，招式幀數也不推進）
+       *   'zoomIn' 鏡頭拉近時（預設）/ 'hold' 凍結停留時 / 'zoomOut' 鏡頭拉遠時（遊戲恢復）/ 'after' 鏡頭拉遠後
+       *   拉近、停留期間播的部分只是凍結中的動畫（不做命中判定，幀數表畫成綠色虛線）
        * lockTarget：命中後把對手吸附在面前，直到被打飛或招式結束
+       * heavyHitEffect：命中時用重擊特效（火花較多、噴較遠）；絕招一律是重擊特效
+       * holdUntilLand：空中出招時，動畫播完停在最後一幀，直到落地（接落地硬直）才結束；發生後攻擊判定一直持續到落地
        * hitBones：攻擊判定掛在哪些骨頭，沒填用預設的雙手
        * key 要和 main.js anims 的 key 相同（動畫長度 = 總幀數）
        */
+      // 空中出招時改用的招式：地面招式 key → 空中招式 key（沒列的照地面招式）
+      airMoves: { heavy: 'airHeavy' },
       moves: {
         // startup = 發生幀 - 1（快打的「發生 10F」= 第 10 幀第一次有攻擊判定）
-        light: { name: '輕攻擊', startup: 10, recovery: 11, hitStun: 25, blockStun: 15, hitstop: 6, chainCancel: 10, chainMirror: true, knockback: 1.2, hitBones: ['RightHand'] }, // Punching_L 是右手出拳
-        medium: { name: '中攻擊', startup: 15, recovery: 13, hitStun: 30, blockStun: 20, hitstop: 7, hitShake: 1, knockback: 1.76, hitBones: ['RightHand'] }, // Punching_M 是右手出拳，手臂約第 16~21 幀伸直（裁掉前 5 幀後）
-        heavy: { name: '重攻擊', startup: 20, recovery: 15, hitStun: 35, blockStun: 25, hitstop: 8, hitShake: true, knockback: 2.4, hitBones: ['LeftHand'] }, // Punching_H 是左手出拳
-        dog_bear: { name: 'dog_bear', isSuper: true, sounds: [{ name: 'dog_bear_title', frame: 1 }, { name: 'dog_bear', frame: 2, delay: 0.1 }], advance: { from: 2, to: 8, distance: 0.5 }, hits: [10, 60, 95, 145, 190, 235, 285, 320], hitFrames: 10, hitStun: 60, blockStun: 30, knockback: 0, rootMotion: true, launch: true, lockTarget: true, lockDistance: 0.75 },
+        light: { name: '輕攻擊', startup: 10, recovery: 11, hitStun: 25, blockStun: 15, hitstop: 6, chainCancel: 5, chainMirror: true, knockback: 1, hitBones: ['RightHand'] }, // Punching_L 是右手出拳
+        medium: { name: '中攻擊', startup: 15, recovery: 13, hitStun: 30, blockStun: 17, hitstop: 7, chainCancel: 5, chainMirror: true, hitShake: 1, knockback: 1.7, hitBones: ['RightHand'] }, // Punching_M 是右手出拳，手臂約第 16~21 幀伸直（裁掉前 5 幀後）
+        heavy: { name: '重攻擊', startup: 20, recovery: 15, hitStun: 35, blockStun: 20, hitstop: 8, chainCancel: 6, chainMirror: true, hitShake: true, heavyHitEffect: true, knockback: 2.5, hitBones: ['LeftHand'] }, // Punching_H 是左手出拳
+        // 空中重攻擊（MmaKick，20 幀）：第 10 幀發生，攻擊判定持續到落地
+        airHeavy: { name: '空中重攻擊', startup: 9, recovery: 0, hitStun: 35, blockStun: 20, hitstop: 8, hitShake: true, knockback: 2.5, holdUntilLand: true, hitLimb: { from: 'LeftLeg', to: 'LeftFoot', width: 0.25, extend: 0.12 } }, // MmaKick 是左腳踢出、右腳在下；判定是左小腿（膝蓋 → 腳踝再延伸到腳尖）
+        dog_bear: { name: 'dog_bear', isSuper: true, animStart: 'zoomOut', sounds: [{ name: 'dog_bear_title', frame: 1 }, { name: 'dog_bear', frame: 10, delay: 0.1 }], advance: { from: 1, to: 15, distance: 2 }, hits: [18, 68, 103, 153, 198, 243, 293, 328], hitFrames: 10, hitStun: 60, blockStun: 30, knockback: 0, rootMotion: true, launch: true, lockTarget: true, lockDistance: 0.75 },
         // 以下絕招數據先用預設值，之後再依動畫調整
-        kick_ball: { name: 'kick_ball', isSuper: true, sounds: [{ name: 'kick_ball_title', frame: 1 }], grab: { from: 2, to: 7, range: 1, distance: 0.6, stunFrame: 10 }, hits: [148], hitFrames: 11, launchDistance: 4, hitStun: 30, knockback: 2, rootMotion: true, launch: true, hitBones: ['LeftFoot', 'RightFoot'] },
+        kick_ball: { name: 'kick_ball', isSuper: true, sounds: [{ name: 'kick_ball_title', frame: 1 }], grab: { from: 44, to: 49, range: 1, distance: 0.6, stunFrame: 10 }, hits: [148], hitFrames: 11, launchDistance: 4, hitStun: 30, knockback: 2, rootMotion: true, launch: true, hitBones: ['LeftFoot', 'RightFoot'] },
         monkey_turn: { name: 'monkey_turn', isSuper: true, startup: 17, recovery: 40, hitStun: 30, knockback: 2, rootMotion: true, launch: true },
-        shake_head: { name: 'shake_head', isSuper: true, hitBones: ['RightHand'], sounds: [{ name: 'shake_head_title', frame: 1 }, { name: 'shake_head', frame: 2 }], faceCamera: true, advance: { from: 2, to: 418, distance: 1.5 }, hits: [[8, 18], [48, 58], [93, 103], [143, 153], [183, 193], [223, 233], [273, 283], [318, 328], [378, 418]], hitStun: 80, blockStun: 50, knockback: 0, launch: true, lockTarget: true, lockDistance: 0.75 },
-        dodge_step: { name: 'dodge_step', isSuper: true, sounds: [{ name: 'dodge_step_title', frame: 1 }], faceCamera: true, length: 40, firstPassDelay: 10, repeatOnHit: { at: 30, times: 4 }, dashThrough: { from: 5, to: 14, gap: 0.8, lastDistance: 4 }, launchDistance: 4, launchReverse: true, hits: [[5, 14]], hitStun: 45, knockback: 0, launch: true, hitBones: ['LeftHand', 'RightHand', 'Spine2'] },
+        shake_head: { name: 'shake_head', isSuper: true, animStart: 'zoomOut', hitBones: ['RightHand'], sounds: [{ name: 'shake_head_title', frame: 1 }, { name: 'shake_head', frame: 2 }], faceCamera: true, advance: { from: 2, to: 418, distance: 1.5 }, hits: [[8, 18], [48, 58], [93, 103], [143, 153], [183, 193], [223, 233], [273, 283], [318, 328], [378, 418]], hitStun: 80, blockStun: 50, knockback: 0, launch: true, lockTarget: true, lockDistance: 0.75 },
+        dodge_step: { name: 'dodge_step', isSuper: true, sounds: [{ name: 'dodge_step_title', frame: 1 }], faceCamera: true, length: 40, firstPassDelay: 48, repeatOnHit: { at: 30, times: 4 }, dashThrough: { from: 5, to: 14, gap: 0.8, lastDistance: 4 }, launchDistance: 4, launchReverse: true, hits: [[5, 14]], hitStun: 45, knockback: 0, launch: true, hitBones: ['LeftHand', 'RightHand', 'Spine2'] },
       },
       hitBones: ['LeftHand', 'RightHand'], // 預設攻擊判定骨頭
       /**
        * 跳躍（幀）：起跳前 prejump → 滯空 air → 落地硬直 landing
-       * 高度 = heightRate × 身高（腳底離地），用拋物線計算
+       * 高度 = heightRate × 身高（腳底離地），上升、下降各用一段拋物線計算
+       * apexRate：滯空的第幾成到最高點；小於 0.5 = 上升快、下降慢（0.5 = 上下對稱）
        * animTakeoff / animLand：Jumping 動畫裡雙腳離地、落地的幀，用來把動畫對到上面三段
        *   以動畫檔本身的幀數填寫（animFps，Mixamo 下載的 30F），跟遊戲邏輯的 FPS 無關
        */
       jump: {
-        prejump: 4,
+        prejump: 0,
         air: 45,
-        landing: 0, // 0 = 落地直接回到站立，沒有落地硬直
+        landing: 5, // 落地硬直；0 = 落地直接回到站立
         heightRate: 1.25,
+        apexRate: 0.4,
         forwardSpeed: 2, // 斜跳水平速度（公尺 / 秒）
         backSpeed: 2,
         animTakeoff: 11,
@@ -141,11 +156,12 @@ export class Fighter {
         animFps: 30,
       },
       // 衝刺：前前 / 後後，固定 frames 幀內移動 distance 公尺，期間不能出招、不能防禦
+      // 空中衝刺（跳躍中按 0 或連按兩下方向鍵）也用同一組數據；衝刺期間停在當下高度，之後落下，直到落地都不能再出招
       dash: {
         frames: 20,
         forwardDistance: 1.2,
         backDistance: 1,
-        animSpeed: 2, // 沒有衝刺動畫，走路動畫加速播放
+        animSpeed: 1, // 衝刺動畫（Walking_dash）播放倍率
       },
       blockStun: 5, // 防禦硬直（幀）
       blockPush: 1.5, // 防禦時往後滑的初速（公尺 / 秒）
@@ -205,6 +221,7 @@ export class Fighter {
     this.vy = 0 // 垂直速度（公尺 / 秒）
     this.airFrame = 0 // 離地後經過幾幀，用來對應跳躍動畫
     this.hasAirAttacked = false // 一次跳躍只能出一招
+    this.hasAirDashed = false // 一次跳躍只能空中衝刺一次
     this.flashFrame = 0
     this.materials = [] // { material, color, emissive }：clone 過的材質與原本的顏色、自發光
     this.hitConfirmed = false // 這次出招已經打中對手（防禦住不算），衝刺取消用
@@ -225,6 +242,8 @@ export class Fighter {
     this.recoveryCut = 0 // chainCancel：這次出招的收招少了幾幀
     this.hurtboxParts = [] // { box, bones, pad, helper }
     this.hitParts = [] // { name, sphere, bone, helper }：所有招式用到的骨頭，出招時只啟用該招的部分
+    this.limbHit = null // { obb, helper }：hitLimb 招式的長方體判定
+    this.boneCache = {} // 骨頭名稱（不含前綴）→ 骨頭，見 _getBone
     this.pushBox = new THREE.Box3()
     this.debugGroup = new THREE.Group()
     this.skeletonHelper = null
@@ -278,12 +297,17 @@ export class Fighter {
     return this.isGuarding && !this.isAirborne && (this.canAct || this.state === 'block')
   }
 
+  /** 被打飛、飛走動畫還沒播完（還沒起身）：判定為空中受擊，可以被追打 */
+  get isLaunched() {
+    return this.state === 'down' && this.stateFrame < this.flyFrames
+  }
+
   /**
-   * 無敵：倒地（飛走 + 起身）期間；絕招的前 superInvincibleFrames 幀，但攻擊判定第 1 幀起就不再無敵（以先到的為準）
+   * 無敵：起身期間（飛走中不無敵，見 isLaunched）；絕招的前 superInvincibleFrames 幀，但攻擊判定第 1 幀起就不再無敵（以先到的為準）
    * 絕招鏡頭演出期間遊戲暫停，本來就不會被打
    */
   get isInvincible() {
-    if (this.state === 'down') return true
+    if (this.state === 'down') return !this.isLaunched
     const move = this.getCurrentMove()
     if (!move?.isSuper) return false
     const firstActive = move.hits ? hitRange(move.hits[0], move.hitFrames)[0] : move.startup + 1
@@ -311,7 +335,9 @@ export class Fighter {
     this.isGuarding = !!input.guard || (input.move !== 0 && input.move === -this.facingSign)
     this._advanceState()
 
-    const canAirAttack = this.state === 'air' && !this.hasAirAttacked && input.attack && this.actions[input.attack] && !this.moves[input.attack]?.isSuper
+    const airDashDir = this._getAirDashDir(input)
+    const airAttack = input.attack && (this.airMoves[input.attack] ?? input.attack)
+    const canAirAttack = this.state === 'air' && !this.hasAirAttacked && airAttack && this.actions[airAttack] && !this.moves[airAttack]?.isSuper
 
     // 預約時段內按衝刺取消：先記住，碰到對手時觸發（見 main.js _step）
     if (input.rush && !this.canRush && !this.rushQueued && this._canQueueRush()) {
@@ -335,15 +361,18 @@ export class Fighter {
       this.rushAttack = null
       this.startMove(key)
       this.isStateHeld = false
-    } else if (this.state === 'dash') {
+    } else if (airDashDir) {
+      this._startAirDash(airDashDir)
+      if (input.rush) this.usedRush = true
+    } else if (this.state === 'dash' || this.state === 'airDash') {
       this._dashStep()
     } else if (this.state === 'hit' || this.state === 'block') {
       this.x += this.knockVelocity * STEP
       this.knockVelocity *= Math.exp(-8 * STEP)
     } else if (canAirAttack) {
-      // 空中攻擊：先沿用地面的輕 / 重攻擊動畫，一次跳躍只能出一招
+      // 空中攻擊：airMoves 有列的改用空中招式，其餘沿用地面招式；一次跳躍只能出一招
       this.hasAirAttacked = true
-      this.currentMove = input.attack
+      this.currentMove = airAttack
       this._setState('attack')
     } else if (this.canAct) {
       // 5. 走路中按衝刺取消鍵 = 前前 / 後後
@@ -425,7 +454,8 @@ export class Fighter {
     if (this.state === 'jumpStart') return 'prejump'
     if (this.state === 'air') return 'air'
     if (this.state === 'land') return 'landing'
-    if (this.state === 'dash') return 'dash'
+    if (this.state === 'dash' || this.state === 'airDash') return 'dash'
+    if (this.isLaunched) return 'stun' // 飛走中是受擊硬直（可被追打），起身才是無敵的倒地
     if (this.state === 'down') return 'down'
     if (this.state !== 'attack') return null
     if (this.isInvincible) return 'invincible' // 絕招開頭的無敵幀
@@ -456,6 +486,8 @@ export class Fighter {
       return 'active'
     }
     if (this.stateFrame < startup) return 'startup'
+    // holdUntilLand：空中發生後一直是攻擊判定，直到落地
+    if (this.isAirborne && this.moves[this.currentMove].holdUntilLand) return 'active'
     // chainCancel 縮短的是收招，攻擊判定幀不變
     if (this.stateFrame >= this.stateLength - (recovery - this.recoveryCut)) return 'recovery'
     return 'active'
@@ -485,14 +517,16 @@ export class Fighter {
 
     const isHitActive = this.isHitActive()
     const activeBones = this._getActiveHitBones()
-    const radius = this.getCurrentMove()?.hitRadius ?? this.hitRadius
+    const move = this.getCurrentMove()
+    const radius = move?.hitRadius ?? this.hitRadius
     this.hitParts.forEach(part => {
       part.bone.getWorldPosition(part.sphere.center)
       part.sphere.radius = radius
       part.helper.position.copy(part.sphere.center)
       part.helper.scale.setScalar(radius / this.hitRadius) // 判定球網格是用預設半徑建的
-      part.helper.visible = isHitActive && activeBones.includes(part.name)
+      part.helper.visible = isHitActive && !move?.hitLimb && activeBones.includes(part.name)
     })
+    this._updateLimbHit(move?.hitLimb, isHitActive)
 
     this.pushBox.min.set(this.x - this.pushHalfWidth, 0, -0.3)
     this.pushBox.max.set(this.x + this.pushHalfWidth, 0.02, 0.3)
@@ -507,9 +541,32 @@ export class Fighter {
   checkHit(target) {
     if (!this.isHitActive() || target.isInvincible) return false
     const activeBones = this._getActiveHitBones()
+    if (this.getCurrentMove()?.hitLimb) return target.hurtboxParts.some(hurt => this.limbHit.obb.intersectsBox3(hurt.box))
     return this.hitParts
       .filter(hit => activeBones.includes(hit.name))
       .some(hit => target.hurtboxParts.some(hurt => hurt.box.intersectsSphere(hit.sphere)))
+  }
+
+  /**
+   * 命中點（打擊特效用）：攻擊判定碰到的受擊框上，離判定中心最近的點
+   * 找不到接觸（例如吸附中必定命中、沒有實際碰到）就用對手身體中心
+   */
+  getHitPoint(target) {
+    const point = new THREE.Vector3()
+    if (this.getCurrentMove()?.hitLimb) {
+      const { obb } = this.limbHit
+      const hurt = target.hurtboxParts.find(h => obb.intersectsBox3(h.box))
+      if (hurt) return hurt.box.clampPoint(obb.center, point)
+    } else {
+      const activeBones = this._getActiveHitBones()
+      for (const hit of this.hitParts) {
+        if (!activeBones.includes(hit.name)) continue
+        const hurt = target.hurtboxParts.find(h => h.box.intersectsSphere(hit.sphere))
+        if (hurt) return hurt.box.clampPoint(hit.sphere.center, point)
+      }
+    }
+    const body = target.hurtboxParts.find(h => h.name === 'body') || target.hurtboxParts[0]
+    return body ? body.box.getCenter(point) : point.set(target.x, 1, 0)
   }
 
   /**
@@ -530,7 +587,7 @@ export class Fighter {
    * 被打中：中斷目前動作、擊退或打飛、閃紅光
    * @param {number} fromX 攻擊方位置，決定擊退方向
    * @param {{ hitStun: number, knockback: number }} move 攻擊方的招式數據
-   * @param {boolean} isLaunch 打飛：播飛走 + 起身，期間無敵（空中被打到也一律打飛）
+   * @param {boolean} isLaunch 打飛：播飛走 + 起身，只有起身無敵（空中、飛走中被打到也一律重新打飛）
    */
   takeHit(fromX, move, isLaunch = false) {
     this.grabFrame = 0
@@ -538,11 +595,10 @@ export class Fighter {
     this._applyFlash(1) // 頓幀期間不會 update，先亮起來
     this.knockVelocity = 0
 
-    if ((isLaunch || this.isAirborne) && this.actions.fly) {
+    if ((isLaunch || this.isAirborne || this.isLaunched) && this.actions.fly) {
       if (this.isJumpArc) {
         // 從跳躍拋物線切到自由落下，延續當下的垂直速度
-        const { speed, gravity } = this._getJumpPhysics()
-        this.vy = speed - gravity * (this.airFrame / FPS)
+        this.vy = this._getJumpVelocity(this.airFrame / this.jump.air)
         this.isJumpArc = false
       }
       this.vx = 0
@@ -619,6 +675,7 @@ export class Fighter {
       const list = Array.isArray(obj.material) ? obj.material : [obj.material]
       const cloned = list.map(material => {
         const copy = material.clone()
+        copy.fog = false // 場景的霧只蓋場地（絕招演出用），人物不受影響
         if (copy.color) this.materials.push({ material: copy, color: copy.color.clone(), emissive: copy.emissive?.clone() })
         return copy
       })
@@ -640,6 +697,7 @@ export class Fighter {
       ...clips,
       idle: clips.idle || (walk && THREE.AnimationUtils.subclip(walk, 'idle_fallback', 0, 1)), // 沒有 idle：walking 第一格
       walkBack: clips.walkBack || walk?.clone(), // 沒有後退動作：walking 倒著播，見 _play
+      dash: clips.dash || walk, // 沒有衝刺動作：用 walking 代替
     }
     this.hasWalkBackClip = !!clips.walkBack
 
@@ -660,8 +718,44 @@ export class Fighter {
     })
   }
 
+  /**
+   * hitLimb 的長方體判定：長軸從 from 骨頭指向 to 骨頭，長度 = 兩骨頭距離 + extend，截面 width × width
+   * 截面的旋轉取「把 Y 軸轉到肢體方向」的最短旋轉，長方體繞長軸的角度不影響太大
+   */
+  _updateLimbHit(limb, isHitActive) {
+    const { obb, helper } = this.limbHit
+    const from = limb && this._getBone(limb.from)
+    const to = limb && this._getBone(limb.to)
+    helper.visible = !!(from && to) && isHitActive
+    if (!from || !to) {
+      obb.halfSize.set(0, 0, 0)
+      return
+    }
+
+    const start = from.getWorldPosition(new THREE.Vector3())
+    const dir = to.getWorldPosition(new THREE.Vector3()).sub(start)
+    const length = dir.length() + (limb.extend ?? 0)
+    dir.normalize()
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+
+    obb.center.copy(start).addScaledVector(dir, length / 2)
+    obb.halfSize.set(limb.width / 2, length / 2, limb.width / 2)
+    obb.rotation.setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(quaternion))
+
+    helper.position.copy(obb.center)
+    helper.quaternion.copy(quaternion)
+    helper.scale.set(limb.width, length, limb.width)
+  }
+
+  /** 依 Mixamo 骨頭名稱（不含前綴）取得骨頭，查過的會記住 */
+  _getBone(name) {
+    if (!(name in this.boneCache)) this.boneCache[name] = this.model.getObjectByName(`${BONE_PREFIX}${name}`) || null
+    return this.boneCache[name]
+  }
+
   _setupBoxes() {
-    const getBone = name => this.model.getObjectByName(`${BONE_PREFIX}${name}`)
+    this.boneCache = {} // 換模型時重查
+    const getBone = name => this._getBone(name)
 
     this.hurtboxParts = HURTBOX_PARTS.map(part => {
       const box = new THREE.Box3()
@@ -683,6 +777,12 @@ export class Fighter {
       this.debugGroup.add(helper)
       return { ...part, helper, sphere: new THREE.Sphere(new THREE.Vector3(), this.hitRadius) }
     })
+
+    // hitLimb 招式共用的長方體判定（1 × 1 × 1 的網格，依肢體長度縮放）
+    const limbHelper = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), sphereMat)
+    limbHelper.visible = false
+    this.debugGroup.add(limbHelper)
+    this.limbHit = { obb: new OBB(), helper: limbHelper }
 
     this.debugGroup.add(new THREE.Box3Helper(this.pushBox, COLOR.pushbox))
   }
@@ -712,9 +812,11 @@ export class Fighter {
         this.currentMove = key
         this._setState('attack', true)
       }
+    } else if (this.stateFrame >= this.stateLength && this.isAirborne && this.getCurrentMove()?.holdUntilLand) {
+      // holdUntilLand：停在最後一幀等落地（落地由 _updateAirborne 切到落地硬直）
     } else if (this.stateFrame >= this.stateLength) {
-      // 空中出招結束還沒落地：回到滯空姿勢
-      this._setState(this.isAirborne && this.state === 'attack' ? 'air' : 'idle')
+      // 空中出招 / 空中衝刺結束還沒落地：回到滯空姿勢
+      this._setState(this.isAirborne && ['attack', 'airDash'].includes(this.state) ? 'air' : 'idle')
     } else if (this.state === 'down' && this.stateFrame === this.flyFrames) {
       this._play('getUp', true)
     }
@@ -745,11 +847,39 @@ export class Fighter {
     return { index, count }
   }
 
-  /** 跳躍拋物線：最高點 h、滯空 T 秒 → 重力 8h/T²、起跳速度 4h/T */
+  /**
+   * 跳躍拋物線：最高點 h、上升 Tu 秒、下降 Td 秒（Tu = apexRate × 滯空）
+   * 上升重力 2h/Tu²、起跳速度 2h/Tu；下降重力 2h/Td²（上升快、下降慢時，下降重力較小）
+   * 空中被打飛、空中衝刺後的自由落下都用下降重力
+   */
   _getJumpPhysics() {
     const h = this.jump.heightRate * this.characterHeight
     const T = this.jump.air / FPS
-    return { gravity: (8 * h) / T ** 2, speed: (4 * h) / T }
+    const a = this._getApexRate()
+    const up = a * T
+    const down = (1 - a) * T
+    return { speed: (2 * h) / up, riseGravity: (2 * h) / up ** 2, gravity: (2 * h) / down ** 2 }
+  }
+
+  /** 最高點在滯空的比例，限制在 0.1 ~ 0.9 避免除以 0 */
+  _getApexRate() {
+    return Math.min(0.9, Math.max(0.1, this.jump.apexRate ?? 0.5))
+  }
+
+  /** 跳躍進度 p（0 ~ 1）的高度：最高點前後各一段拋物線 */
+  _getJumpHeight(p) {
+    const h = this.jump.heightRate * this.characterHeight
+    const a = this._getApexRate()
+    const r = p < a ? 1 - p / a : (p - a) / (1 - a)
+    return h * (1 - r * r)
+  }
+
+  /** 跳躍進度 p 的垂直速度（公尺 / 秒）：上升段由起跳速度遞減，下降段從 0 開始往下加速 */
+  _getJumpVelocity(p) {
+    const { speed, riseGravity, gravity } = this._getJumpPhysics()
+    const T = this.jump.air / FPS
+    const a = this._getApexRate()
+    return p < a ? speed - riseGravity * p * T : -gravity * (p - a) * T
   }
 
   /** 衝刺 1 幀的位移：全程平均分到每一幀 */
@@ -761,11 +891,35 @@ export class Fighter {
     this.x += this.dashDir * (distance / frames) * rate
   }
 
+  /**
+   * 這一幀要不要空中衝刺，回傳方向（世界座標 -1 / 1），0 = 不衝刺
+   * 連按兩下方向鍵照按的方向；按 0 時看按著的方向，沒按方向就照起跳方向，垂直跳則往前
+   */
+  _getAirDashDir(input) {
+    if (this.state !== 'air' || this.hasAirDashed) return 0
+    if (input.dash) return input.dash
+    if (!input.rush) return 0
+    return input.move || this.jumpDir || this.facingSign
+  }
+
+  /** 空中衝刺：停在當下高度水平衝 dash.frames 幀，之後自由落下；直到落地都不能出招、不能再衝刺 */
+  _startAirDash(dir) {
+    this.hasAirDashed = true
+    this.hasAirAttacked = true
+    this.dashDir = dir
+    this.isJumpArc = false // 衝刺結束後從 0 速度自由落下
+    this.vx = 0
+    this.vy = 0
+    this._setState('airDash')
+    this._dashStep() // 進入衝刺的這一幀也要移動
+  }
+
   _takeOff() {
     const { forwardSpeed, backSpeed } = this.jump
     const dir = this.jumpDir
     this.isAirborne = true
     this.hasAirAttacked = false
+    this.hasAirDashed = false
     this.airFrame = 0
     this.isJumpArc = true
     this.vy = this._getJumpPhysics().speed
@@ -775,18 +929,19 @@ export class Fighter {
 
   /** 空中物理：拋物線、水平速度；腳底碰地就落地（被打飛也一樣會落下） */
   _updateAirborne() {
-    if (!this.isAirborne) return
+    if (!this.isAirborne || this.state === 'airDash') return // 空中衝刺中停在當下高度
     this.airFrame++
     this.x += this.vx * STEP
 
     if (this.isJumpArc) {
       // 跳躍用公式算高度，最高點剛好 = 目標高度、第 air 幀剛好落地（逐幀累加速度會有誤差）
-      const p = this.airFrame / this.jump.air
-      this.y = this.jump.heightRate * this.characterHeight * 4 * p * (1 - p)
+      this.y = this._getJumpHeight(this.airFrame / this.jump.air)
     } else {
       // 空中被打飛：從當下的速度自由落下
       this.y += this.vy * STEP
-      this.vy -= this._getJumpPhysics().gravity * STEP
+      // 往上時用上升重力、往下時用下降重力，跟跳躍軌跡一致
+      const { riseGravity, gravity } = this._getJumpPhysics()
+      this.vy -= (this.vy > 0 ? riseGravity : gravity) * STEP
     }
     if (this.y > 0) return
 
@@ -812,7 +967,13 @@ export class Fighter {
 
     let time = lerp(land, end, this.stateFrame / landing)
     if (this.state === 'jumpStart') time = lerp(0, takeoff, this.stateFrame / prejump)
-    else if (this.state === 'air') time = lerp(takeoff, land, this.airFrame / air)
+    else if (this.state === 'air') {
+      // 動畫的最高點在中間：上升段對到前半、下降段對到後半，動作才會跟著不對稱的軌跡
+      const p = Math.min(1, this.airFrame / air)
+      const a = this._getApexRate()
+      const animP = p < a ? 0.5 * (p / a) : 0.5 + 0.5 * ((p - a) / (1 - a))
+      time = lerp(takeoff, land, animP)
+    }
     // 動畫速度設為 0（見 _setState），mixer.update 不會再推進時間
     action.time = time
   }
@@ -925,7 +1086,10 @@ export class Fighter {
       if (!this.actions.block) actionKey = 'idle'
     } else if (state === 'dash') {
       this.stateLength = this.dash.frames
-      actionKey = this.dashDir === this.facingSign ? 'walk' : 'walkBack'
+      actionKey = 'dash'
+    } else if (state === 'airDash') {
+      this.stateLength = this.dash.frames
+      actionKey = 'dash'
     } else if (state === 'land') {
       this.stateLength = this.jump.landing
       actionKey = 'jump'
@@ -959,10 +1123,13 @@ export class Fighter {
       next = this._getTwinAction(prev)
     }
 
-    // 沒有後退動作時，walking 以 -1 倍速倒著播（LoopRepeat 會自動從結尾繞回）
-    let timeScale = key === 'walkBack' && !this.hasWalkBackClip ? -1 : 1
+    // 沒有後退動作時，walking 反方向播（LoopRepeat 會自動從結尾繞回）
+    let timeScale = 1
+    if (key === 'walk') timeScale = this.walkAnimSpeed
+    if (key === 'walkBack') timeScale = this.hasWalkBackClip ? 1 : -this.walkAnimSpeed
     if (key === 'jump') timeScale = 0 // 跳躍動畫的時間由 _syncJumpAnimation 控制
-    if (this.state === 'dash') timeScale *= this.dash.animSpeed
+    // 衝刺（地面 / 空中）：往後衝時倒著播
+    if (key === 'dash') timeScale = (this.dashDir === this.facingSign ? 1 : -1) * this.dash.animSpeed
 
     next.reset()
     next.setEffectiveTimeScale(timeScale)
@@ -1100,6 +1267,7 @@ export class Fighter {
   /** 還要幾幀才能自由行動；空中、站立等沒有固定長度的狀態回傳 Infinity / 0（輸入預約用） */
   get framesUntilFree() {
     if (this.canAct) return 0
+    if (this.state === 'attack' && this.isAirborne) return Infinity // 空中出招要等落地，不能預約接下一招 / 絕招
     if (['attack', 'hit', 'block', 'dash', 'land', 'down'].includes(this.state)) return this.stateLength - this.stateFrame
     if (this.state === 'jumpStart') return Infinity
     return Infinity
@@ -1230,9 +1398,9 @@ export class Fighter {
     return this.state === 'dash' && this.isRush && this.stateFrame >= this.rush.lockFrames
   }
 
-  /** 衝刺取消停頓中先播衝刺動畫（走路動畫加速播放）；人不移動，由 main.js 在停頓期間推進動畫時間 */
+  /** 衝刺取消停頓中先播衝刺動畫；人不移動，由 main.js 在停頓期間推進動畫時間 */
   startRushAnim() {
-    const next = this.actions.walk // 衝刺取消一律往前
+    const next = this.actions.dash // 衝刺取消一律往前
     if (!next) return
     const prev = this.currentAction
     next.reset()

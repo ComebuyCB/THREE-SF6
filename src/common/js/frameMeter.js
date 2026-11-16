@@ -1,5 +1,6 @@
 // invincible：絕招開頭的無敵幀，顯示跟倒地一樣的白色，但算在招式的全體幀數裡
-const TYPES = ['startup', 'active', 'recovery', 'stun', 'block', 'dash', 'down', 'invincible', 'prejump', 'air', 'landing']
+// frozen：絕招演出停留期間的前搖（只是凍結狀態下播出的動畫），綠色虛線，也算在招式的全體幀數裡
+const TYPES = ['startup', 'active', 'recovery', 'stun', 'block', 'dash', 'down', 'invincible', 'frozen', 'prejump', 'air', 'landing']
 const JUMP_TYPES = ['prejump', 'air', 'landing'] // 跳躍：起跳前 / 滯空 / 落地硬直，另外統計
 const RULER_STEP = 10 // 刻度每幾格標一次幀數
 
@@ -65,7 +66,7 @@ export class FrameMeter {
 
   /**
    * 記錄 1 幀
-   * @param {Array<'startup' | 'active' | 'recovery' | 'stun' | 'block' | 'dash' | 'down' | 'invincible' | 'prejump' | 'air' | 'landing' | null>} types 依 rows 順序（P1、P2）
+   * @param {Array<'startup' | 'active' | 'recovery' | 'stun' | 'block' | 'dash' | 'down' | 'invincible' | 'frozen' | 'prejump' | 'air' | 'landing' | null>} types 依 rows 順序（P1、P2）
    */
   record(types) {
     const isBusy = types.some(Boolean)
