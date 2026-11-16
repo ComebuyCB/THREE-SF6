@@ -61,8 +61,34 @@
     <span class="_text">HITS</span>
   </div>
 
+  <!-- P1 按鍵示意：data-key = e.code，按下時亮起（main.js _updateKeycaps） -->
+  <aside class="index_keys" aria-label="P1 按鍵">
+    <div class="index_keys-group">
+      <div class="index_keys-move">
+        <kbd class="index_key is_w" data-key="KeyW"><b>W</b><small>跳</small></kbd>
+        <kbd class="index_key is_a" data-key="KeyA"><b>A</b><small>左</small></kbd>
+        <kbd class="index_key is_s" data-key="KeyS"><b>S</b><small>下</small></kbd>
+        <kbd class="index_key is_d" data-key="KeyD"><b>D</b><small>右</small></kbd>
+        <kbd class="index_key is_space" data-key="Space"><b>Space</b><small>跳</small></kbd>
+      </div>
+      <p class="index_keys-note">按後 = 後退防禦　S + 後 = 原地防禦<br>連按兩下 = 衝刺</p>
+    </div>
+    <div class="index_keys-group">
+      <div class="index_keys-pad">
+        <kbd class="index_key is_light" data-key="Numpad7"><b>7</b><small>輕</small></kbd>
+        <kbd class="index_key is_medium" data-key="Numpad8"><b>8</b><small>中</small></kbd>
+        <kbd class="index_key is_heavy" data-key="Numpad9"><b>9</b><small>重</small></kbd>
+        <kbd class="index_key is_super" data-key="Numpad4"><b>4</b><small>dodge_step</small></kbd>
+        <kbd class="index_key is_super" data-key="Numpad5"><b>5</b><small>kick_ball</small></kbd>
+        <kbd class="index_key is_super" data-key="Numpad6"><b>6</b><small>招式選取</small></kbd>
+        <kbd class="index_key is_rush is_wide" data-key="Numpad0"><b>0</b><small>衝刺取消</small></kbd>
+      </div>
+    </div>
+  </aside>
+
   <aside class="index_hint">
-    <p class="index_hint-text">P1：A / D 前進後退（按後 = 防禦）　W 跳　連按兩下 A / D 衝刺　數字鍵 7 輕攻擊、8 中攻擊、9 重攻擊、0 衝刺取消（碰到對手後，或前搖中先按）、絕招 1 dog_bear、2 shake_head、4 dodge_step、5 kick_ball、6 招式選取　P2：← / → 前進後退（按後 = 防禦）　↑ 跳　連按兩下 ← / → 衝刺　P 暫停　Esc 全部回到站立　滑鼠：旋轉 / 縮放鏡頭</p>
+    <p class="index_hint-text">P2：方向鍵移動（↓ + 後 = 原地防禦）　Shift + 數字鍵出招</p>
+    <p class="index_hint-text">P 暫停　Esc 全部回到站立　滑鼠：旋轉 / 縮放鏡頭</p>
   </aside>
 
   <script type="module" src="src/common/js/main.js"></script>

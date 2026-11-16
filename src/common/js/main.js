@@ -9,10 +9,11 @@ import { Stage } from './stage.js'
 import { Hud } from './hud.js'
 import { Sound } from './sound.js'
 import { HitEffect } from './hitEffect.js'
+import { FighterAI } from './ai.js'
 
 const MODEL_DIR = 'src/model'
 const SOUND_DIR = 'src/sound'
-const SUPER_ARTS = ['dog_bear', 'kick_ball', 'monkey_turn', 'shake_head', 'dodge_step']
+const SUPER_ARTS = ['dog_bear', 'kick_ball', 'monkey_turn', 'shake_head', 'dodge_step', 'wind_step']
 
 /**
  * FighterViewer：雙人對戰場景
@@ -21,7 +22,7 @@ const SUPER_ARTS = ['dog_bear', 'kick_ball', 'monkey_turn', 'shake_head', 'dodge
  *         輸入 → 人物更新 → 吸附 → 推擠 → 面向 → 命中判定 → 連段 → 幀數表
  *       → 畫面更新（_animate）：絕招演出、鏡頭、HUD 與渲染，跟螢幕更新率走
  * 絕招演出：鏡頭拉近 + 停留期間只有放招的人推進招式（幀數表記成凍結中的前搖），其他一切暫停；鏡頭拉回時遊戲已經繼續
- * P2 用方向鍵 ← → ↑ 操作（移動 / 防禦 / 跳 / 衝刺），沒有攻擊；之後可在 _getP2Input 接 AI
+ * P2 用方向鍵操作（← → 移動 / 防禦、↑ 跳、↓ + 後原地防禦），按著 Shift 再按 P1 的數字鍵 = P2 出招；GUI 勾選「AI 操作」時改由 ai.js 操作
  */
 class FighterViewer {
   constructor(options) {
@@ -42,7 +43,7 @@ class FighterViewer {
         medium: `${MODEL_DIR}/anims/normal/Punching_M.fbx`,
         heavy: `${MODEL_DIR}/anims/normal/Punching_H.fbx`,
         airHeavy: `${MODEL_DIR}/anims/normal/MmaKick.fbx`, // 空中重攻擊
-        fly: `${MODEL_DIR}/anims/normal/FlyingBack.fbx`, // 被絕招最後一段打中：飛走
+        fly: `${MODEL_DIR}/anims/normal/FlyingBack.fbx`, // 被打飛（招式的 launch）、浮空挨打（lock.juggle）
         getUp: `${MODEL_DIR}/anims/normal/KipUp.fbx`, // 飛走後起身
         jump: `${MODEL_DIR}/anims/normal/Jumping.fbx`,
         block: `${MODEL_DIR}/anims/normal/BodyBlock.fbx`,
@@ -50,42 +51,44 @@ class FighterViewer {
       },
       // 有 root motion 的動作：保留臀部前後位移曲線，由程式轉成人物座標（其餘動作完全原地播放）
       rootMotionAnims: ['fly', ...SUPER_ARTS],
-      // root motion 改取臀部的 X（側向）位移：動畫朝側面表演、招式用 yaw 轉 90 度的動作
+      // root motion 改取臀部的 X（側向）位移：動畫朝側面表演的招式（例如 faceCamera）
       rootMotionAxisX: ['shake_head'],
       // 動畫自己會往上跳的動作：拿掉臀部往上的位移（保留下蹲），高度改由程式的拋物線控制
       flattenRiseAnims: ['jump'],
-      // 第一幀臀部就偏離原點的動作：臀部水平位置固定在原點（一般動作固定在第一幀的位置）
-      // 例：換上的動畫第一幀臀部偏離中心、整個人偏出判定框時，把它的 key 加進來
+      // 第一幀臀部就偏離中心（整個人偏出判定框）的動作：臀部水平位置固定在原點，而不是第一幀的位置
       centerHipsAnims: [],
-      // 裁掉動作開頭 start / 結尾 end 幾幀（遊戲幀，FPS 為單位），不改 FBX 檔；刪掉該項就恢復原本長度
-      // 注意：招式的 startup / recovery / hits 是照裁切後的幀數
+      // 裁掉動作開頭 start / 結尾 end 幾幀（遊戲幀），不改 FBX 檔；招式的 startup / recovery / hits 照裁切後的幀數
       trimAnims: {
         // Rokoko 匯出的絕招第 0 幀是 T 字形：裁掉 2 幀（= 30F 檔的第 0 幀），絕招停頓時才不會看到
-        dog_bear: { start: 2 },
+        dog_bear: { start: 2, end: 10 },
         kick_ball: { start: 2 },
         monkey_turn: { start: 2 },
         shake_head: { start: 2 },
         dodge_step: { start: 2 }, // 第 2 次起從第 50 幀開始（2 + fighter.js firstPassDelay 48）
+        wind_step: { start: 2, end: 20 },
         light: { start: 2, end: 4 },
         medium: { start: 5 },
         heavy: { start: 4 },
         block: { start: 3 }, // 防禦動作
         hit: { start: 6 }, // 受擊動作
       },
-      // 背景：2:1 全景圖（equirectangular），GUI 可切換
-      // 用 GroundedSkybox 投影成「有地面的半球」，相機前後移動時場景會有遠近感（直接當 background 是無限遠，不會變）
+      // 動作開頭加快：前 to 幀（遊戲幀，裁切後）用 rate 倍速播完，之後照原速；招式幀數照加快後的時間
+      speedAnims: {
+        wind_step: { to: 60, rate: 2 }, // 跳躍段（前 60 幀）2 倍速 → 30 幀落地
+      },
+      // 背景：2:1 全景圖，用 GroundedSkybox 投影成「有地面的半球」，鏡頭移動時有遠近感；GUI 可切換
       skyboxes: {
         機庫外陰天: 'src/common/img/hanger_exterior_cloudy.webp',
         修道院迴廊: 'src/common/img/historic_cloister_passage.webp',
       },
       dashTapWindow: 250, // 連按兩下方向鍵的間隔（毫秒）內算衝刺
-      // 人物身高（公尺）：每個模型的原始尺寸不同，載入後依此自動縮放成一致
-      characterHeight: 1.75,
+      characterHeight: 1.75, // 人物身高（公尺）：模型原始尺寸不同，載入後縮放成一致；characters 可個別填 height
       stageHalfWidth: 6, // 場地邊界 x = ±6
       startGap: 1.6, // 開場兩人距離
       maxDistance: 5, // 兩人最遠距離（公尺），超過時往外移動的一方被擋住
       rushInputFrames: 8, // 衝刺取消鍵按下後記住幾幀：跟出招鍵差幾幀內按都算
       bufferFrames: 8, // 任何動作結束前幾幀內按攻擊 / 絕招鍵會記住，動作最後一幀接著出招
+      dashBufferFrames: 5, // 前前 / 後後的最後幾幀內按攻擊 / 絕招 / 再次衝刺會記住，衝刺結束接著出
       hitstopFrames: 3, // 命中時雙方停頓幀數（頓幀）；招式有填 hitstop 時用招式的
       // 受擊搖晃（招式有 hitShake 才搖）：被打中的人在頓幀期間沿 z 軸來回搖 cycles 次（頓幀越長搖得越慢）
       hitShake: { cycles: 2, amplitude: 0.15 },
@@ -101,13 +104,12 @@ class FighterViewer {
         shake_head: `${SOUND_DIR}/shake_head.wav`,
         shake_head_title: `${SOUND_DIR}/shake_head_title.wav`,
         dodge_step_title: `${SOUND_DIR}/dodge_step_title.wav`,
+        wind_step_title: { url: `${SOUND_DIR}/wind_step_title.wav`, volume: 0.8 },
       },
       knockdownSoundFrame: 35, // 被打飛後第幾幀播倒地音效（身體碰到地面的時間點）
-      // 絕招演出（遊戲幀，60F = 1 秒）：鏡頭拉近 → 停留 → 拉回（遊戲繼續）
-      // 拉近 + 停留：對手與其他一切凍結；放招的人從招式的 animStart 開始播（預設拉近時就播），
-      //   凍結期間播的部分招式幀數照常推進（幀數表標成「凍結中」），但不做命中 / 抓取判定
-      // animStart 是 'zoomOut' / 'after' 的招式：凍結期間停在第 1 幀，遊戲恢復 / 拉遠結束後才開始
-      // 用遊戲幀計時：跟著 GUI 的遊戲速度變快變慢、暫停時停住，演出跟招式幀數永遠對得上
+      // 絕招演出（遊戲幀）：鏡頭拉近 → 停留 → 拉回（遊戲繼續）
+      // 拉近 + 停留期間其他一切凍結，放招的人從招式的 animStart 開始播（招式幀數推進、但不做命中判定）
+      // 用遊戲幀計時：跟著 GUI 的遊戲速度、暫停，演出跟招式幀數永遠對得上
       superCamera: {
         zoomIn: 20,
         hold: 20,
@@ -115,30 +117,38 @@ class FighterViewer {
         distance: 3, // 拉近後鏡頭與人物胸口的距離（公尺）
         spotFadeIn: 10, // 聚光燈亮起幀數；鏡頭開始拉回時同步淡出
         dimLevel: 0.5, // 演出時場地燈光、背景變暗到原本的幾成（跟聚光燈同步淡入淡出）；1 = 不變暗
-        // 演出時場地的霧（人物不受影響）：發動瞬間就是最濃，鏡頭拉回時淡掉
-        // 離鏡頭 fogNear 公尺開始起霧，fogFar 公尺外的場地完全被霧蓋住
+        // 演出時場地的霧（人物不受影響）：離鏡頭 fogNear ~ fogFar 公尺漸濃，鏡頭拉回時淡掉
         fogColor: 0x15161c,
         fogNear: 5,
         fogFar: 50,
+      },
+      // 命中鏡頭（招式的 hitCamera）的預設值；招式填物件可個別覆蓋。距離同 superCamera.distance
+      hitCamera: {
+        angle: 60, // 從正後方往畫面前方（鏡頭那側）偏幾度
+        height: 0, // 鏡頭比注視點（胸口）高多少公尺
+        lookAhead: { x: 0.3, y: -0.3 }, // 注視點從攻擊方胸口偏多少公尺：x = 往對手方向、y = 往上
+        blendIn: 20, // 拉近幀數
+        blendOut: 20, // 拉回幀數
       },
       // 用 e.code 判斷，開著中文輸入法也能操作
       p1Keys: {
         left: 'KeyA',
         right: 'KeyD',
-        jump: 'KeyW', // W 垂直跳，W + A / D 斜跳
+        jump: ['KeyW', 'Space'], // W 或空白鍵垂直跳，加 A / D 斜跳；可填一個或多個 e.code
+        down: 'KeyS', // 下 + 後 = 站在原地防禦（不後退）
         light: 'Numpad7',
         medium: 'Numpad8',
         heavy: 'Numpad9',
         rush: 'Numpad0', // 輕 / 中 / 重攻擊打中後：發光 + 往前衝刺；預約時段內先按會在打中時觸發
         super: 'Numpad6', // 招式由 GUI「招式選取」決定
-        // 固定招式的絕招鍵：按鍵 → 招式 key
-        // Numpad3 保留，之後放新的絕招
+        // 固定招式的絕招鍵：按鍵 → 招式 key（Numpad3 保留給之後的絕招）
         supers: { Numpad1: 'dog_bear', Numpad2: 'shake_head', Numpad4: 'dodge_step', Numpad5: 'kick_ball' },
       },
       p2Keys: {
         left: 'ArrowLeft',
         right: 'ArrowRight',
         jump: 'ArrowUp', // ↑ 垂直跳，↑ + ← / → 斜跳
+        down: 'ArrowDown', // ↓ + 後 = 站在原地防禦（不後退）
       },
     }
 
@@ -158,6 +168,7 @@ class FighterViewer {
     this.stageEl = document.querySelector(this.el)
     this.loadingEl = document.querySelector('#loading')
     this.progressEl = document.querySelector('#loadingProgress')
+    this.keycapEls = document.querySelectorAll('[data-key]')
 
     // 4. setup runtime state
     this.clock = new THREE.Clock()
@@ -166,23 +177,27 @@ class FighterViewer {
     this.p1 = null
     this.p2 = null
     this.keys = new Set()
-    this.pendingAttack = null // 按下的那一幀才算出招，按住不連發；下一幀遊戲邏輯取走
-    this.rushLife = 0 // 衝刺取消鍵按下後還記住幾幀（出招鍵稍晚按也能預約）；被用掉就清 0
-    this.bufferedAttack = null // 收招結束前 bufferFrames 幀內按的招式：{ key, life }，能動的第一幀出招
+    // 每個玩家的輸入狀態（鍵盤或 AI 都經過這裡）：
+    //   pendingAttack：按下的那一幀才算出招，按住不連發；下一幀遊戲邏輯取走
+    //   rushLife：衝刺取消鍵按下後還記住幾幀（出招鍵稍晚按也能預約）；被用掉就清 0
+    //   bufferedAttack：收招結束前 bufferFrames 幀內按的招式：{ key, life }，能動的第一幀出招
+    this.input = { p1: this._newInputState(), p2: this._newInputState() }
+    this.ai = { p1: new FighterAI(), p2: new FighterAI() } // GUI 勾選「AI 操作」時由 AI 按鍵
     this.pendingDash = { p1: 0, p2: 0 } // 連按兩下方向鍵：衝刺方向（世界座標），下一幀遊戲邏輯取走
     this.lastTap = { p1: { code: '', time: 0 }, p2: { code: '', time: 0 } } // 上一次按下的方向鍵，判斷連按用
     this.skyboxCache = {} // 背景名稱 → texture
     this.skybox = null // GroundedSkybox mesh
     this.cameraPull = 0 // 跳躍時鏡頭額外往後拉的距離
+    this.hitCam = null // 命中鏡頭中：{ attacker, move, phase: 'in' / 'out', time, fromPos, fromTarget, base: { target, offset } }
     this.hitstopTimer = 0 // 剩餘頓幀數
     this.rushFreeze = null // 衝刺取消停頓中：{ fighter, frame }，停頓到第 animStartFrame 幀開始播衝刺動畫
     this.shake = null // 受擊搖晃中：{ fighter, time, duration }（秒）
     this.accumulator = 0 // 尚未消化的時間，累積滿 1/60 秒就推進 1 幀
     this.superDim = 0 // 絕招演出的變暗程度（0 = 正常、1 = 暗到 dimLevel）
     this.superFog = null // 絕招演出的場地霧（THREE.Fog），平常推到很遠等於沒有霧
-    this.cinematic = null // 絕招演出中：{ fighter, time, fromOffset, zoomPos, zoomTarget }
-    this.lock = null // 吸附中：{ attacker, target, offset }
-    this.combo = 0 // P1 目前連段數
+    this.cinematic = null // 絕招演出中：{ fighter, time, frozenSteps, animStart, fromTarget, fromOffset, zoomPos, zoomTarget }
+    this.lock = null // 吸附中：{ attacker, target, offset, isGrab, lift（lock.juggle 開始後）, juggleHits, seg }
+    this.combos = { p1: 0, p2: 0 } // 各玩家目前連段數
     this.superSpot = null // 絕招聚光燈：{ light, aim, peak }
     this.frameMeter = new FrameMeter()
     this.sound = new Sound({ files: this.sounds })
@@ -190,19 +205,25 @@ class FighterViewer {
     this.params = {
       p1: this.characters[0].name,
       p2: this.characters[1].name,
-      superMove: 'monkey_turn',
+      superMove: 'wind_step',
       p2Guard: false, // P2 木樁一直按著後（防禦）
-      volume: 0.8, // 音效音量
+      p1AI: false, // P1 由 AI 操作
+      p2AI: false, // P2 由 AI 操作
       skybox: '機庫外陰天',
-      // 全景圖拍攝時相機離地高度（公尺）：越小地面看起來越近、景物越大
-      skyboxHeight: 2,
-      // 半球半徑（公尺）：場景「盒子」的大小，超出的部分是天空
-      skyboxRadius: 40,
+      skyboxHeight: 2, // 全景圖拍攝時相機離地高度（公尺）：越小地面看起來越近、景物越大
+      skyboxRadius: 40, // 半球半徑（公尺）：超出的部分是天空
+      skyboxRotation: 16, // 場景水平轉動角度（度）：轉全景圖，讓想要的景物對著鏡頭
+      // shake_head 最後一擊打飛：飛多遠、撞到邊界牆是否反彈、反彈力度（剩下的飛行距離 × 倍率）
+      shakeHeadLaunch: 8,
+      shakeHeadBounce: true,
+      shakeHeadBounceForce: 1,
       stageLight: 1, // 場地亮度（環境光、主光、背景一起乘上這個倍率）
       timeScale: 1,
       paused: false,
       moveSpeed: 2,
       showCoords: true,
+      // 介面顯示：GUI 勾選開關，key 對到 _setUiVisible 的區塊
+      ui: { frameMeter: true, keys: true, hint: true, combo: true },
       showDebug: true,
       showSkeleton: false,
     }
@@ -230,27 +251,67 @@ class FighterViewer {
     window.addEventListener('resize', () => this._resize())
 
     window.addEventListener('keydown', e => {
+      // 出招鍵（數字鍵）：按著 Shift = P2 出招，否則 P1；該玩家由 AI 操作時不理會
+      const isAttackKey = this._isAttackKey(e.code)
+      const slot = isAttackKey && this._isShiftAttack(e) ? 'p2' : 'p1'
+      if (!e.repeat && isAttackKey && !this.params[`${slot}AI`]) {
+        const st = this.input[slot]
+        if (e.code === this.p1Keys.light) st.pendingAttack = 'light'
+        if (e.code === this.p1Keys.medium) st.pendingAttack = 'medium'
+        if (e.code === this.p1Keys.heavy) st.pendingAttack = 'heavy'
+        if (e.code === this.p1Keys.rush) st.rushLife = this.rushInputFrames
+        if (e.code === this.p1Keys.super) st.pendingAttack = this.params.superMove
+        if (this.p1Keys.supers[e.code]) st.pendingAttack = this.p1Keys.supers[e.code]
+      }
       if (!e.repeat) {
-        if (e.code === this.p1Keys.light) this.pendingAttack = 'light'
-        if (e.code === this.p1Keys.medium) this.pendingAttack = 'medium'
-        if (e.code === this.p1Keys.heavy) this.pendingAttack = 'heavy'
-        if (e.code === this.p1Keys.rush) this.rushLife = this.rushInputFrames
-        if (e.code === this.p1Keys.super) this.pendingAttack = this.params.superMove
-        if (this.p1Keys.supers[e.code]) this.pendingAttack = this.p1Keys.supers[e.code]
         this._detectDash('p1', e.code)
         this._detectDash('p2', e.code)
       }
       if (!e.repeat && e.code === 'KeyP') this._togglePause()
       if (!e.repeat && e.code === 'Escape') this.resetAll()
-      // 方向鍵預設會捲動頁面
-      if (Object.values(this.p2Keys).includes(e.code)) e.preventDefault()
+      // 方向鍵、空白鍵預設會捲動頁面（空白鍵也會按到 GUI 上有焦點的按鈕）
+      if (Object.values(this.p2Keys).includes(e.code) || [this.p1Keys.jump].flat().includes(e.code)) e.preventDefault() // ↓ 也會捲動頁面
       this.keys.add(e.code)
+      this._updateKeycaps()
     })
 
-    window.addEventListener('keyup', e => this.keys.delete(e.code))
+    window.addEventListener('keyup', e => {
+      this.keys.delete(e.code)
+      this._updateKeycaps()
+    })
 
     // 切換視窗時 keyup 不會觸發，避免人物一直走
-    window.addEventListener('blur', () => this.keys.clear())
+    window.addEventListener('blur', () => {
+      this.keys.clear()
+      this._updateKeycaps()
+    })
+  }
+
+  /** 出招鍵（輕 / 中 / 重 / 衝刺取消 / 絕招）：P1 直接按、P2 按著 Shift 按同一組鍵 */
+  _isAttackKey(code) {
+    const k = this.p1Keys
+    return [k.light, k.medium, k.heavy, k.rush, k.super].includes(code) || !!k.supers[code]
+  }
+
+  /**
+   * 出招鍵是否按著 Shift（= P2 出招）
+   * Windows 在 NumLock 開著時，Shift + 數字鍵盤會被系統暫時放開 Shift、改送 Home / ↑ / Insert 等鍵：
+   * e.shiftKey 是 false，但 e.key 不是數字，用這點判斷（e.code 仍是 Numpad7 等，所以出招鍵照常對得上）
+   */
+  _isShiftAttack(e) {
+    if (e.shiftKey) return true
+    return e.code.startsWith('Numpad') && e.getModifierState('NumLock') && !/^\d$/.test(e.key)
+  }
+
+  /** 介面區塊顯示 / 隱藏（GUI「介面顯示」） */
+  _setUiVisible(key, isVisible) {
+    const selectors = { frameMeter: '#frameMeter', keys: '.index_keys', hint: '.index_hint', combo: '#comboP1' }
+    document.querySelector(selectors[key])?.classList.toggle('is_uiHide', !isVisible)
+  }
+
+  /** 畫面左下的按鍵示意：按著的鍵亮起 */
+  _updateKeycaps() {
+    this.keycapEls.forEach(el => el.classList.toggle('is_down', this.keys.has(el.dataset.key)))
   }
 
   // public
@@ -267,6 +328,7 @@ class FighterViewer {
     const prev = this[slot]
     const startX = (slot === 'p1' ? -1 : 1) * (this.startGap / 2)
 
+    this._endHitCamera() // 換人物：命中鏡頭直接回到一般鏡頭
     prev?.dispose()
     this.lock = null
     this[slot] = new Fighter({
@@ -281,9 +343,29 @@ class FighterViewer {
       showSkeleton: this.params.showSkeleton,
     })
     this.params[slot] = name
+    this._applyMoveTuning(this[slot])
+    if (this.p1 && this.p2) {
+      this.p1.opponent = this.p2
+      this.p2.opponent = this.p1
+    }
 
     this.isLoading = false
     this._showLoading(false)
+  }
+
+  /** 切換 AI 操作：清掉 AI 的狀態與殘留的按鍵 */
+  _resetAI(slot) {
+    this.ai[slot].reset()
+    this.input[slot] = this._newInputState()
+  }
+
+  /** GUI 調整的招式數據寫進人物的招式表（每個 Fighter 有自己的一份，換人物後要重寫） */
+  _applyMoveTuning(fighter) {
+    const move = fighter?.moves.shake_head
+    if (!move) return
+    const { shakeHeadLaunch, shakeHeadBounce, shakeHeadBounceForce } = this.params
+    // launch 可能是 true（全照預設）：轉成物件再寫入，招式表其他打飛設定保留
+    move.launch = { ...(typeof move.launch === 'object' ? move.launch : {}), distance: shakeHeadLaunch, wallBounce: shakeHeadBounce ? shakeHeadBounceForce : 0 }
   }
 
   /** 切換背景：載入全景圖後投影成有地面的半球，載入過的會快取 */
@@ -321,7 +403,15 @@ class FighterViewer {
     this.scene.add(this.skybox)
     // 相機跑出半球外（例如滑鼠縮放很遠）時，背景仍是同一張圖
     this.scene.background = texture
+    this._applySkyboxRotation()
     this._applyStageLight()
+  }
+
+  /** 場景水平轉動：半球與無限遠背景一起轉，接縫才對得上 */
+  _applySkyboxRotation() {
+    const rad = THREE.MathUtils.degToRad(this.params.skyboxRotation)
+    if (this.skybox) this.skybox.rotation.y = rad
+    this.scene.backgroundRotation.y = rad
   }
 
   /** 絕招演出的場地霧：amount 0 = 沒有霧（推到很遠）、1 = fogNear ~ fogFar */
@@ -439,6 +529,8 @@ class FighterViewer {
       let clip = this.mixamo.bindAnimation(character, anims[i], key)
       const trim = this.trimAnims[key]
       if (trim) clip = this._trimClip(clip, trim.start ?? 0, trim.end ?? 0)
+      const speed = this.speedAnims[key]
+      if (speed) clip = this._speedUpClip(clip, speed.to, speed.rate)
       clips[key] = this._makeInPlace(clip, {
         isRootMotion: this.rootMotionAnims.includes(key),
         isFlattenRise: this.flattenRiseAnims.includes(key),
@@ -479,6 +571,17 @@ class FighterViewer {
       return new track.constructor(track.name, times, values)
     })
     return new THREE.AnimationClip(source.name, end - start, tracks)
+  }
+
+  /**
+   * 動作開頭 toFrames 幀（遊戲幀）改成 rate 倍速：key 的時間在這段內除以 rate，之後的整段往前平移
+   * 要在 _makeInPlace 之前做，root motion 才會跟著新的時間
+   */
+  _speedUpClip(source, toFrames, rate) {
+    const end = Math.min(toFrames / FPS, source.duration)
+    const remap = t => (t <= end ? t / rate : t - end + end / rate)
+    const tracks = source.tracks.map(track => new track.constructor(track.name, track.times.map(remap), track.values))
+    return new THREE.AnimationClip(source.name, remap(source.duration), tracks)
   }
 
   /**
@@ -525,13 +628,22 @@ class FighterViewer {
     gui.add(this.params, 'p2', names).name('P2 角色').listen().onChange(v => this.setCharacter('p2', v))
     gui.add(this.params, 'superMove', SUPER_ARTS).name('招式選取（6 鍵）')
     gui.add(this.params, 'p2Guard').name('P2 木樁防禦')
-    const soundFolder = gui.addFolder('音效')
-    soundFolder.add(this.params, 'volume', 0, 1, 0.05).name('總音量').onChange(v => this.sound.setVolume(v))
-    soundFolder.add(this, 'knockdownSoundFrame', 0, 120, 1).name('倒地音效幀')
+    gui.add(this.params, 'p1AI').name('P1 由 AI 操作').onChange(() => this._resetAI('p1'))
+    gui.add(this.params, 'p2AI').name('P2 由 AI 操作').onChange(() => this._resetAI('p2'))
+    const tuneFolder = gui.addFolder('shake_head 擊飛')
+    const applyTuning = () => fighters().forEach(f => this._applyMoveTuning(f))
+    tuneFolder.add(this.params, 'shakeHeadLaunch', 0.5, 10, 0.1).name('擊飛距離（m）').onChange(applyTuning)
+    const bounceForce = tuneFolder.add(this.params, 'shakeHeadBounceForce', 0.05, 1.5, 0.05).name('反彈力度').onChange(applyTuning)
+    tuneFolder.add(this.params, 'shakeHeadBounce').name('反彈邊界牆').onChange(v => {
+      bounceForce.enable(v)
+      applyTuning()
+    })
+    bounceForce.enable(this.params.shakeHeadBounce)
     const bgFolder = gui.addFolder('背景')
     bgFolder.add(this.params, 'skybox', Object.keys(this.skyboxes)).name('場景').listen().onChange(v => this.setSkybox(v))
     bgFolder.add(this.params, 'skyboxHeight', 0.5, 10, 0.1).name('拍攝高度').onFinishChange(() => this._buildSkybox())
     bgFolder.add(this.params, 'skyboxRadius', 10, 200, 1).name('場景大小').onFinishChange(() => this._buildSkybox())
+    bgFolder.add(this.params, 'skyboxRotation', -180, 180, 1).name('場景轉動（度）').onChange(() => this._applySkyboxRotation())
     bgFolder.add(this.params, 'stageLight', 0, 2, 0.05).name('場地亮度').onChange(() => this._applyStageLight())
     bgFolder.add(this.superCamera, 'dimLevel', 0, 1, 0.05).name('絕招時變暗到')
 
@@ -540,6 +652,13 @@ class FighterViewer {
     this.pauseController = playFolder.add(this.params, 'paused').name('暫停（P）')
     playFolder.add(this.params, 'moveSpeed', 0.5, 5, 0.1).name('移動速度').onChange(v => {
       fighters().forEach(f => { f.moveSpeed = v })
+    })
+
+    // 介面顯示：取消勾選就隱藏該區塊
+    const uiFolder = gui.addFolder('介面顯示')
+    const uiNames = { frameMeter: '幀數表', keys: '按鍵示意（左下）', hint: '操作說明（中下）', combo: '連段數' }
+    Object.entries(uiNames).forEach(([key, name]) => {
+      uiFolder.add(this.params.ui, key).name(name).onChange(v => this._setUiVisible(key, v))
     })
 
     const debugFolder = gui.addFolder('除錯')
@@ -559,7 +678,7 @@ class FighterViewer {
    * 輸入預約：動作結束前 bufferFrames 幀內按的招式先記住，能動的第一幀才送出
    * 衝刺取消中、連打等本來就能接受輸入的時機照常送出，交給 Fighter 判斷
    */
-  _bufferAttack(fighter, pressed) {
+  _bufferAttack(fighter, pressed, st) {
     // 連打預約的絕招（保險：正常會在 _step 的最後一幀就接上）
     if (fighter.queuedAttack) {
       if (!fighter.canAct) return pressed
@@ -569,38 +688,107 @@ class FighterViewer {
     }
     if (pressed) {
       const left = fighter.framesUntilFree
-      if (left > 1 && left <= this.bufferFrames) this.bufferedAttack = { key: pressed, life: left + 2 } // 多留一點，出招第 1 幀定格時不會提早失效
+      if (left > 1 && left <= this._getBufferFrames(fighter)) st.bufferedAttack = { key: pressed, life: left + 2 } // 多留一點，出招第 1 幀定格時不會提早失效
     }
     // 動作的最後一幀就送出：Fighter 這一幀結束動作後馬上出招，幀數表不會多一格空白
     // 先不清掉，真的開始出招才清（見 _step）
-    if (!pressed && this.bufferedAttack && fighter.framesUntilFree <= 1) return this.bufferedAttack.key
-    if (this.bufferedAttack && --this.bufferedAttack.life <= 0) this.bufferedAttack = null
+    if (!pressed && st.bufferedAttack && fighter.framesUntilFree <= 1) return st.bufferedAttack.key
+    if (st.bufferedAttack && --st.bufferedAttack.life <= 0) st.bufferedAttack = null
     return pressed
   }
 
-  _getP1Input() {
-    const { left, right } = this.p1Keys
-    const move = (this.keys.has(right) ? 1 : 0) - (this.keys.has(left) ? 1 : 0)
-    const attack = this._bufferAttack(this.p1, this.pendingAttack)
-    const dash = this.pendingDash.p1
-    const rush = this.rushLife > 0
-    if (this.rushLife > 0) this.rushLife--
-    this.pendingAttack = null
-    this.pendingDash.p1 = 0
-    return { move, attack, dash, rush, jump: this.keys.has(this.p1Keys.jump) }
-  }
-
-  /** P2：方向鍵移動 / 跳 / 衝刺，按後 = 防禦；GUI「P2 木樁防禦」打開時不按也一直防禦。之後的 AI 在這裡回傳 { move, attack, dash, jump, guard } */
-  _getP2Input() {
-    const { left, right, jump } = this.p2Keys
-    const move = (this.keys.has(right) ? 1 : 0) - (this.keys.has(left) ? 1 : 0)
-    const dash = this.pendingDash.p2
-    this.pendingDash.p2 = 0
-    return { move, attack: null, dash, jump: this.keys.has(jump), guard: this.params.p2Guard }
+  /** 預約時段長度：前前 / 後後用 dashBufferFrames，其他動作用 bufferFrames */
+  _getBufferFrames(fighter) {
+    return fighter.state === 'dash' && !fighter.isRush ? this.dashBufferFrames : this.bufferFrames
   }
 
   /**
-   * 吸附：lockTarget 招式命中後，對手固定在攻擊方面前，直到被打飛或招式結束
+   * 衝刺（連按兩下）的預約：前前 / 後後的最後 dashBufferFrames 幀內連按，記住方向，衝刺最後一幀送出（接著再衝一次）
+   * @returns {number} 這一幀要送給 Fighter 的衝刺方向
+   */
+  _bufferDash(fighter, dash, st) {
+    const left = fighter.framesUntilFree
+    if (dash && fighter.state === 'dash' && !fighter.isRush && left > 1 && left <= this.dashBufferFrames) {
+      st.bufferedDash = { dir: dash, life: left + 2 }
+      return 0
+    }
+    if (!dash && st.bufferedDash && left <= 1) {
+      const dir = st.bufferedDash.dir
+      st.bufferedDash = null
+      return dir
+    }
+    if (st.bufferedDash && --st.bufferedDash.life <= 0) st.bufferedDash = null
+    return dash
+  }
+
+  _newInputState() {
+    return { pendingAttack: null, rushLife: 0, bufferedAttack: null, bufferedDash: null }
+  }
+
+  /**
+   * 一個玩家這一幀的輸入（格式見 Fighter.update）：AI 操作時由 AI 決定，否則讀鍵盤；「P2 木樁防禦」打開時 P2 一直防禦
+   * 出招鍵、衝刺取消鍵之後都經過同一套預約 / 記憶流程
+   */
+  _getInput(slot) {
+    const fighter = this[slot]
+    const st = this.input[slot]
+    const dash = this.pendingDash[slot]
+    this.pendingDash[slot] = 0
+    let raw
+
+    if (this.params[`${slot}AI`]) {
+      raw = this.ai[slot].think(fighter, this._getOpponent(fighter))
+      if (raw.attack) st.pendingAttack = raw.attack
+      if (raw.rush) st.rushLife = this.rushInputFrames
+    } else {
+      const keys = slot === 'p1' ? this.p1Keys : this.p2Keys
+      let move = (this.keys.has(keys.right) ? 1 : 0) - (this.keys.has(keys.left) ? 1 : 0)
+      const jumpKeys = [keys.jump].flat()
+      // 下 + 後：站在原地防禦（不後退）；只按後是一邊後退一邊防禦
+      const isStandGuard = this.keys.has(keys.down) && move !== 0 && move === -fighter.facingSign
+      if (isStandGuard) move = 0
+      raw = { move, dash, jump: jumpKeys.some(code => this.keys.has(code)), guard: isStandGuard || (slot === 'p2' && this.params.p2Guard), standGuard: isStandGuard }
+    }
+
+    const attack = this._bufferAttack(fighter, st.pendingAttack, st)
+    const rush = st.rushLife > 0
+    if (st.rushLife > 0) st.rushLife--
+    st.pendingAttack = null
+    // 這一幀要出招就不送預約的衝刺（出招優先）
+    const bufferedDash = this._bufferDash(fighter, raw.dash || 0, st)
+    return { move: raw.move, attack, dash: attack ? raw.dash : bufferedDash, rush, jump: raw.jump, guard: raw.guard, standGuard: !!raw.standGuard }
+  }
+
+  _getOpponent(fighter) {
+    return fighter === this.p1 ? this.p2 : this.p1
+  }
+
+  /** 提早結束這一幀（衝刺取消停頓、絕招開始）時，已經讀走的出招鍵放回去，下一次讀輸入時還在 */
+  _keepInputs(inputs) {
+    Object.entries(inputs).forEach(([slot, input]) => {
+      const st = this.input[slot]
+      if (input.attack && !st.pendingAttack) st.pendingAttack = input.attack
+    })
+  }
+
+  /**
+   * 這一幀要開始的絕招：能動時、衝刺取消中、或動作的最後一幀（預約的絕招從上一個動作的結尾直接接上）
+   * 普通拳的攻擊判定期間按絕招：直接中斷出絕招（不論有沒有打中）
+   * @returns {{ key: string, isFromNeutral: boolean } | null}
+   */
+  _getSuperStart(f, input) {
+    const chainSuper = f.chainKey && f.moves[f.chainKey]?.isSuper && f.connected && f.state === 'attack' && f.framesUntilFree <= 1 ? f.chainKey : null
+    const rushSuper = f.isRushReady && f.moves[f.rushAttack]?.isSuper ? f.rushAttack : null
+    const key = chainSuper || (f.moves[input.attack]?.isSuper ? input.attack : null) || rushSuper
+    const isSuperCancel = f.state === 'attack' && !f.getCurrentMove()?.isSuper && f.getFrameType() === 'active'
+    if (!key || !(chainSuper || isSuperCancel || f.canAct || f.isRushReady || (f.framesUntilFree <= 1 && !f.isRush))) return null
+    // 從自由狀態或動作結尾出的絕招先轉向對手；連打接上、普通拳中斷、衝刺取消不轉身
+    const isFromNeutral = !chainSuper && !isSuperCancel && !f.isRushReady && (f.canAct || f.framesUntilFree <= 1)
+    return { key, isFromNeutral }
+  }
+
+  /**
+   * 吸附：lock 招式命中後，對手固定在攻擊方面前，直到被打飛或招式結束
    * 之後有防禦時，防禦住的不吸附（在 _checkHits 判斷）
    */
   _updateLock() {
@@ -608,10 +796,44 @@ class FighterViewer {
     if (!lock) return
     if (lock.attacker.state !== 'attack' || lock.target.state !== 'hit') {
       lock.target.release() // 被抓住的對手：招式結束沒被打飛就放開
+      // lock.juggle：飛走動畫恢復正常播放；沒打飛就結束時從空中直接落下
+      if (lock.lift) lock.target.setJuggle(null)
+      if (lock.lift && lock.target.y > 0 && !lock.target.isAirborne) {
+        lock.target.isAirborne = true
+        lock.target.vy = 0
+      }
       this.lock = null
       return
     }
     lock.target.x = lock.attacker.x + lock.attacker.facingSign * lock.offset
+    if (lock.lift) lock.target.y = this._getJuggleHeight(lock)
+  }
+
+  /**
+   * lock.juggle 的高度：跟著對手飛走動畫的幀數走
+   * 每一下（第 1 下從動畫第 0 幀、之後從 animRestart 幀）從當下高度出發：到 maxFrame 升到 maxHeight → 到 minFrame 落到 minHeight → 停住
+   * 起點已經過了 maxFrame 時只往下落
+   */
+  _getJuggleHeight(lock) {
+    const t = lock.target
+    const { maxFrame, maxHeight, minFrame, minHeight } = lock.lift
+    // 新的一下：記住這一下的起點（動畫幀、高度）
+    if (lock.juggleHits !== t.juggleHits) {
+      lock.juggleHits = t.juggleHits
+      lock.seg = { from: t.juggleStartFrame, fromY: t.y }
+    }
+    const { from, fromY } = lock.seg
+    const a = t.juggleAnimFrame
+    const easeOut = r => 1 - (1 - r) ** 2 // 上升：越接近頂點越慢
+    const easeIn = r => r ** 2 // 下降：越落越快
+    const clamp01 = r => Math.min(1, Math.max(0, r))
+
+    const isRising = from < maxFrame
+    if (isRising && a <= maxFrame) return fromY + (maxHeight - fromY) * easeOut(clamp01((a - from) / (maxFrame - from)))
+    const peakY = isRising ? maxHeight : fromY
+    const fallFrom = Math.max(maxFrame, from)
+    if (a >= minFrame || fallFrom >= minFrame) return minHeight
+    return peakY + (minHeight - peakY) * easeIn(clamp01((a - fallFrom) / (minFrame - fallFrom)))
   }
 
   /**
@@ -651,6 +873,28 @@ class FighterViewer {
       }
       const { startX, endX } = f.passPlan
       f.x = startX + (endX - startX) * ((frame - d.from + 1) / (d.to - d.from + 1))
+    })
+  }
+
+  /** 衝刺取消後出的招式：受擊 / 防禦硬直加 rush.stunBonus 幀（回傳加過的招式數據副本，不改招式表） */
+  _getStunMove(attacker, target) {
+    const move = attacker.getCurrentMove()
+    const bonus = attacker.isRushAttack ? attacker.rush.stunBonus || 0 : 0
+    if (!move || !bonus) return move
+    return { ...move, hitStun: move.hitStun + bonus, blockStun: (move.blockStun ?? target.blockStun) + bonus }
+  }
+
+  /**
+   * 打飛撞牆反彈：飛走中碰到邊界牆、或離對手達到最遠距離（maxDistance）就反彈
+   * 反彈後剩下的飛行距離 × 招式的 launch.wallBounce 往回飛（6 公尺一開始就貼牆 → 往回 4.5 公尺）
+   */
+  _checkWallBounce() {
+    ;[[this.p1, this.p2], [this.p2, this.p1]].forEach(([f, other]) => {
+      if (!f.flyBounce || f.isFlyBounced || !f.isLaunched) return
+      const eps = 1e-4
+      const atWall = f.x * f.flyDir >= this.stageHalfWidth - f.pushHalfWidth - eps
+      const atMaxDistance = (f.x - other.x) * f.flyDir >= this.maxDistance - eps
+      if (atWall || atMaxDistance) f.bounceFly()
     })
   }
 
@@ -700,7 +944,7 @@ class FighterViewer {
 
   /**
    * 攻擊方的攻擊判定碰到對手受擊框就算命中；每段只算一下，launch 招式最後一段把對手打飛
-   * 吸附中（lockTarget 命中後）：之後每一段進入判定幀就必定命中，不看判定框（一旦被打中就打到招式結束）
+   * 吸附中（lock 招式命中後）：之後每一段進入判定幀就必定命中，不看判定框（一旦被打中就打到招式結束）
    * 抓取中（grab）：仍照判定球判斷，打中才擊飛；沒打中就抓到招式結束才放開
    */
   _checkHits() {
@@ -708,7 +952,7 @@ class FighterViewer {
       const isLocked = this.lock?.attacker === attacker && this.lock.target === target && !this.lock.isGrab
       if (!(isLocked ? attacker.isHitActive() : attacker.checkHit(target))) return
 
-      const move = attacker.getCurrentMove()
+      const move = this._getStunMove(attacker, target)
       // 打擊特效：命中點、往被打的方向噴
       const hitPoint = attacker.getHitPoint(target)
       const hitDir = Math.sign(target.x - attacker.x) || attacker.facingSign
@@ -734,22 +978,37 @@ class FighterViewer {
       this.hitstopTimer = move.hitstop ?? this.hitstopFrames
       if (move.hitShake) this._startShake(target, this.hitstopTimer, move.hitShake === true ? this.hitShake.cycles : move.hitShake)
 
-      if (move.lockTarget && !isLaunch && !this.lock) {
-        const gap = attacker.pushHalfWidth + target.pushHalfWidth
-        this.lock = { attacker, target, offset: Math.max(gap, move.lockDistance ?? gap) } // 吸附到攻擊方正前方
+      // 命中鏡頭：第 1 段打中時拉近，打飛那一下拉回
+      if (attacker.getCurrentMove()?.hitCamera) {
+        if (isLaunch) this._releaseHitCamera(attacker)
+        else if (attacker.hitWindow === 0 && !this.hitCam) this._startHitCamera(attacker)
       }
 
-      if (attacker === this.p1) {
-        this.combo = isCombo ? this.combo + 1 : 1
-        this.hud.setCombo(this.combo)
+      if (move.lock && !isLaunch && !this.lock) {
+        const gap = attacker.pushHalfWidth + target.pushHalfWidth
+        this.lock = { attacker, target, offset: Math.max(gap, move.lock.distance ?? gap), lift: null, juggleHits: -1 } // 吸附到攻擊方正前方
       }
+
+      // lock.juggle：吸附中打到第 fromHit 段（1 起算）時開始浮空挨打
+      const juggle = attacker.getCurrentMove()?.lock?.juggle
+      const lock = this.lock
+      if (juggle && !isLaunch && lock?.attacker === attacker && lock.target === target && !lock.lift && attacker.hitWindow + 1 >= (juggle.fromHit ?? 1)) {
+        lock.lift = juggle
+        target.setJuggle({ hold: juggle.animHold ?? 14, restart: juggle.animRestart ?? 8 })
+      }
+
+      const slot = attacker === this.p1 ? 'p1' : 'p2'
+      this.combos[slot] = isCombo ? this.combos[slot] + 1 : 1
+      this.hud.setCombo(this.combos[slot])
     })
 
     // 對手恢復自由 = 連段結束
-    if (this.combo && this.p2.canAct) {
-      this.combo = 0
-      this.hud.setCombo(0)
-    }
+    ;['p1', 'p2'].forEach(slot => {
+      if (this.combos[slot] && this._getOpponent(this[slot]).canAct) {
+        this.combos[slot] = 0
+        if (!this.combos.p1 && !this.combos.p2) this.hud.setCombo(0)
+      }
+    })
   }
 
   /**
@@ -774,11 +1033,112 @@ class FighterViewer {
     this.cameraPull += pull
   }
 
+  /**
+   * 命中鏡頭開始：從目前鏡頭位置拉近到攻擊方後方斜角
+   * 記住一般鏡頭（注視點與相對位置），拉回時回到這裡；絕招演出還沒結束時用演出開始前的一般鏡頭
+   */
+  _startHitCamera(attacker) {
+    const c = this.cinematic
+    const base = c
+      ? { target: c.fromTarget.clone(), offset: c.fromOffset.clone() }
+      : { target: this.controls.target.clone(), offset: this.camera.position.clone().sub(this.controls.target) }
+    this.hitCam = {
+      attacker,
+      move: attacker.currentMove,
+      cfg: this._getHitCameraConfig(attacker.getCurrentMove()),
+      phase: 'in',
+      time: 0,
+      fromPos: this.camera.position.clone(),
+      fromTarget: this.controls.target.clone(),
+      base,
+    }
+    this.controls.enabled = false
+  }
+
+  /** 命中鏡頭開始拉回一般鏡頭（打飛、或招式被中斷 / 結束）；attacker 有給時只拉回這個人的命中鏡頭 */
+  _releaseHitCamera(attacker) {
+    const h = this.hitCam
+    if (!h || h.phase === 'out' || (attacker && h.attacker !== attacker)) return
+    h.phase = 'out'
+    h.time = 0
+    h.fromPos = this.camera.position.clone()
+    h.fromTarget = this.controls.target.clone()
+  }
+
+  /** 命中鏡頭直接回到一般鏡頭（Esc 重置、換人物） */
+  _endHitCamera() {
+    const h = this.hitCam
+    if (!h) return
+    const target = h.base.target.clone()
+    if (this.p1 && this.p2) target.x = (this.p1.x + this.p2.x) / 2
+    this.camera.position.copy(target).add(h.base.offset)
+    this.controls.target.copy(target)
+    this.controls.enabled = !this.cinematic
+    this.cameraPull = 0
+    this.hitCam = null
+  }
+
+  /** 招式的命中鏡頭設定：預設值（main.js hitCamera）+ 招式的 hitCamera 物件（true = 全用預設） */
+  _getHitCameraConfig(move) {
+    const own = typeof move?.hitCamera === 'object' ? move.hitCamera : {}
+    return { ...this.hitCamera, ...own, lookAhead: { ...this.hitCamera.lookAhead, ...own.lookAhead } }
+  }
+
+  /** 命中鏡頭的位置：攻擊方背後、往鏡頭那側偏 angle 度，距離 superCamera.distance，看著攻擊方胸口（再偏 lookAhead：x 往對手、y 往上） */
+  _getHitCameraPose(fighter, cfg) {
+    const { angle, height, lookAhead } = cfg
+    const a = THREE.MathUtils.degToRad(angle)
+    const target = new THREE.Vector3(fighter.x + fighter.facingSign * lookAhead.x, this.characterHeight * 0.7 + lookAhead.y, 0)
+    const back = new THREE.Vector3(-fighter.facingSign * Math.cos(a), 0, Math.sin(a))
+    const pos = target.clone().addScaledVector(back, this.superCamera.distance)
+    pos.y += height
+    return { pos, target }
+  }
+
+  /** 命中鏡頭每個畫面更新：拉近後跟著攻擊方；拉回時終點是跟著兩人中點的一般鏡頭 */
+  _updateHitCamera(realDelta) {
+    const h = this.hitCam
+    const { blendIn, blendOut } = h.cfg
+    h.time += this.params.paused ? 0 : realDelta * this.params.timeScale * FPS
+    const f = h.attacker
+    // 招式被中斷（受擊、換招）或沒打飛就結束：一樣拉回
+    if (h.phase === 'in' && (f.state !== 'attack' || f.currentMove !== h.move)) this._releaseHitCamera()
+
+    const easeOut = t => 1 - (1 - t) ** 3
+    const easeInOut = t => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2)
+    let toPos
+    let toTarget
+    let k
+    if (h.phase === 'in') {
+      ;({ pos: toPos, target: toTarget } = this._getHitCameraPose(f, h.cfg))
+      k = easeOut(Math.min(1, h.time / blendIn))
+    } else {
+      toTarget = h.base.target.clone()
+      toTarget.x = (this.p1.x + this.p2.x) / 2
+      toPos = toTarget.clone().add(h.base.offset)
+      k = easeInOut(Math.min(1, h.time / blendOut))
+    }
+    this.camera.position.lerpVectors(h.fromPos, toPos, k)
+    this.controls.target.lerpVectors(h.fromTarget, toTarget, k)
+    this.camera.lookAt(this.controls.target)
+
+    if (h.phase === 'out' && k >= 1) {
+      this.controls.enabled = !this.cinematic
+      this.cameraPull = 0
+      this.hitCam = null
+    }
+  }
+
   /** 絕招演出開始：人物停在招式第 0 幀，鏡頭從目前位置拉近到人物胸口 */
   _startSuper(fighter, key) {
     fighter.startMove(key)
     fighter.snapToCurrentAction() // 演出停頓期間顯示絕招的第 1 幀（不從之前的動作淡入）
-    this._playMoveSounds(fighter.moves[key], 1) // 第 1 幀音效：按下絕招的瞬間
+    // 畫面補間的「上一幀」也記成絕招第 1 幀：之後 _animate 會再記一次，前後兩幀都是絕招第 1 幀
+    // 不然 animStart 是 zoomOut / after 的絕招（凍結期間不推進），凍結結束的第一個畫面會內插回出招前的姿勢（看起來像閃回閒置）
+    fighter.captureFrame()
+    this._playMoveSounds(fighter.moves[key], 1, fighter) // 第 1 幀音效：按下絕招的瞬間
+    // cutSounds：記住這招，被中斷時停掉它的音效（見 _checkSoundCut）
+    fighter.soundMove = fighter.moves[key].cutSounds ? { key, frame: 0, left: Infinity } : null
     this.scene.updateMatrixWorld()
     fighter.updateBoxes()
 
@@ -850,6 +1210,7 @@ class FighterViewer {
   /** Esc：中斷所有招式、演出、頓幀、吸附、輸入預約與音效，雙方回到站立（位置保留） */
   resetAll() {
     if (!this.p1 || !this.p2) return
+    this._endHitCamera()
     if (this.cinematic) {
       // 鏡頭直接回到一般位置
       const c = this.cinematic
@@ -872,22 +1233,39 @@ class FighterViewer {
     this.rushFreeze = null
     this.accumulator = 0
     this.isRushFrozen = false
-    this.rushLife = 0
-    this.pendingAttack = null
+    this.input = { p1: this._newInputState(), p2: this._newInputState() }
     this.pendingDash = { p1: 0, p2: 0 }
-    this.bufferedAttack = null
-    this.combo = 0
+    this.ai.p1.reset()
+    this.ai.p2.reset()
+    this.combos = { p1: 0, p2: 0 }
     this.hud.setCombo(0)
     this.sound.stopAll()
     this.p1.resetToIdle()
     this.p2.resetToIdle()
   }
 
-  /** 播放招式在第 frame 幀的音效 */
-  _playMoveSounds(move, frame) {
+  /** 播放招式在第 frame 幀的音效；音效歸到出招的人那一組，招式被中斷時可以只停他的 */
+  _playMoveSounds(move, frame, fighter) {
     move.sounds?.forEach(s => {
-      if ((s.frame ?? 1) === frame) this.sound.play(s.name, s.delay)
+      if ((s.frame ?? 1) === frame) this.sound.play(s.name, s.delay, fighter)
     })
+  }
+
+  /**
+   * cutSounds 招式的音效中斷：招式還沒播完（上一幀還剩不只 1 幀）就變成別的狀態 / 別的招式 / 從頭開始 → 停掉這個人的招式音效
+   * 正常播完（最後一幀接回站立）不停，讓音效自然收尾
+   */
+  _checkSoundCut(f) {
+    const s = f.soundMove
+    if (!s) return
+    const isStill = f.state === 'attack' && f.currentMove === s.key && f.stateFrame >= s.frame
+    if (isStill) {
+      s.frame = f.stateFrame
+      s.left = f.framesUntilFree
+      return
+    }
+    if (s.left > 1) this.sound.stopGroup(f)
+    f.soundMove = null
   }
 
   /**
@@ -895,7 +1273,11 @@ class FighterViewer {
    * 幀數表記成 frozen（凍結中的前搖：招式幀數有在算，但只是凍結狀態下播出的動畫）
    */
   _stepSuperFrozen(fighter) {
+    const prevX = fighter.x
+    fighter.isFrozenStep = true // advance.afterFreeze 的招式凍結期間不移動
     fighter.update({ move: 0, attack: null, jump: false, guard: false, dash: 0 })
+    fighter.isFrozenStep = false
+    this._stopAtOpponent(fighter, prevX)
     this.scene.updateMatrixWorld()
     fighter.updateBoxes()
     this.frameMeter.record([this.p1, this.p2].map(f => (f === fighter ? 'frozen' : f.getFrameType())))
@@ -903,14 +1285,30 @@ class FighterViewer {
     fighter.captureFrame()
   }
 
+  /**
+   * 凍結期間對手不能被推：放招的人往前移動（advance 等）碰到對手就停在對手面前，不推對手、也不穿過去
+   * 越過頭頂（高度差大）或穿越中（dashThrough）照常通過；也不超出場地邊界
+   */
+  _stopAtOpponent(fighter, prevX) {
+    const opp = this._getOpponent(fighter)
+    const isOverhead = Math.abs(fighter.y - opp.y) > this.characterHeight * 0.8
+    if (!isOverhead && !fighter.isPassing) {
+      const minGap = fighter.pushHalfWidth + opp.pushHalfWidth
+      fighter.x = prevX <= opp.x ? Math.min(fighter.x, opp.x - minGap) : Math.max(fighter.x, opp.x + minGap)
+    }
+    const limit = this.stageHalfWidth - fighter.pushHalfWidth
+    fighter.x = Math.max(-limit, Math.min(limit, fighter.x))
+  }
+
   /** 招式音效：第 2 幀以後在這裡播（第 1 幀在出招時播，避免定格那幀重複） */
   _playStepSounds(fighters) {
     fighters.forEach(f => {
+      this._checkSoundCut(f)
       const move = f.getCurrentMove()
       const frame = f.moveFrame
       if (move?.sounds && frame > 1 && f.soundFrame !== frame) {
         f.soundFrame = frame
-        this._playMoveSounds(move, frame)
+        this._playMoveSounds(move, frame, f)
       }
       if (!move) f.soundFrame = 0
     })
@@ -964,11 +1362,14 @@ class FighterViewer {
     if (t < zoomIn) k = easeOut(t / zoomIn)
     else if (t > zoomIn + hold) k = 1 - easeInOut(Math.min(1, (t - zoomIn - hold) / zoomOut))
 
-    this.camera.position.lerpVectors(basePos, c.zoomPos, k)
-    this.controls.target.lerpVectors(baseTarget, c.zoomTarget, k)
-    this.camera.lookAt(this.controls.target)
+    // 命中鏡頭接手時（演出拉回中就打中）：鏡頭交給 _updateHitCamera，演出只管燈光
+    if (!this.hitCam) {
+      this.camera.position.lerpVectors(basePos, c.zoomPos, k)
+      this.controls.target.lerpVectors(baseTarget, c.zoomTarget, k)
+      this.camera.lookAt(this.controls.target)
+    }
 
-    // 聚光燈：spotFadeIn 秒亮起，鏡頭開始拉回時同步淡出；燈在鏡頭位置，照向人物
+    // 聚光燈：spotFadeIn 幀亮起，鏡頭開始拉回時同步淡出；燈在鏡頭位置，照向人物
     const backT = t - zoomIn - hold
     const amount = backT > 0 ? Math.max(0, 1 - backT / zoomOut) : Math.min(1, t / spotFadeIn)
     const { light: spot, aim, peak } = this.superSpot
@@ -986,9 +1387,11 @@ class FighterViewer {
       this.superDim = 0
       this._applyStageLight()
       this._applySuperFog(0)
-      this.camera.position.copy(basePos)
-      this.controls.target.copy(baseTarget)
-      this.controls.enabled = true
+      if (!this.hitCam) {
+        this.camera.position.copy(basePos)
+        this.controls.target.copy(baseTarget)
+        this.controls.enabled = true
+      }
       this.cinematic = null
     }
   }
@@ -1019,65 +1422,81 @@ class FighterViewer {
     }
     this.rushFreeze = null
 
-    const p1Input = this._getP1Input()
+    const slots = ['p1', 'p2']
+    const inputs = { p1: this._getInput('p1'), p2: this._getInput('p2') }
 
     // 衝刺取消：按下的瞬間（或預約後碰到對手時）發光並頓幀，頓幀結束的下一幀才開始衝刺
-    if ((p1Input.rush || this.p1.rushQueued) && this.p1.canRush && !this.isRushFrozen) {
-      this.p1.startGlow()
-      this.hitstopTimer = this.p1.rush.freezeFrames
-      this.rushFreeze = { fighter: this.p1, frame: 0 }
-      if (p1Input.attack && !this.pendingAttack) this.pendingAttack = p1Input.attack // 同一幀按的招式留到停頓結束再交給 Fighter 記住
-      this.rushLife = 1 // 頓幀期間不會讀輸入，結束後的下一幀交給 Fighter 開始衝刺
-      this.isRushFrozen = true
-      return
+    if (!this.isRushFrozen) {
+      const slot = slots.find(k => (inputs[k].rush || this[k].rushQueued) && this[k].canRush)
+      if (slot) {
+        const f = this[slot]
+        f.startGlow()
+        this.hitstopTimer = f.rush.freezeFrames
+        this.rushFreeze = { fighter: f, frame: 0 }
+        this._keepInputs(inputs) // 同一幀按的招式留到停頓結束再交給 Fighter 記住
+        this.input[slot].rushLife = 1 // 頓幀期間不會讀輸入，結束後的下一幀交給 Fighter 開始衝刺
+        this.isRushFrozen = true
+        return
+      }
     }
     this.isRushFrozen = false
 
     // 絕招：先進入演出，鏡頭拉近 + 停留期間只有放招的人推進（見 _stepSuperFrozen），拉回時遊戲繼續
-    // 絕招：能動時、衝刺取消中、或動作的最後一幀（預約的絕招從上一個動作的結尾直接接上）
-    const p1 = this.p1
-    const chainSuper = p1.chainKey && p1.moves[p1.chainKey]?.isSuper && p1.connected && p1.state === 'attack' && p1.framesUntilFree <= 1 ? p1.chainKey : null
-    const rushSuper = p1.isRushReady && p1.moves[p1.rushAttack]?.isSuper ? p1.rushAttack : null
-    const superKey = chainSuper || (p1.moves[p1Input.attack]?.isSuper ? p1Input.attack : null) || rushSuper
-    // 普通拳的攻擊判定期間按絕招：直接中斷出絕招（不論有沒有打中）
-    const isSuperCancel = p1.state === 'attack' && !p1.getCurrentMove()?.isSuper && p1.getFrameType() === 'active'
-    if (superKey && (chainSuper || isSuperCancel || p1.canAct || p1.isRushReady || (p1.framesUntilFree <= 1 && !p1.isRush))) {
-      p1.rushAttack = null
-      this.bufferedAttack = null
-      p1.startedMove = false
-      this._startSuper(p1, superKey)
+    for (const slot of slots) {
+      const f = this[slot]
+      const start = this._getSuperStart(f, inputs[slot])
+      if (!start) continue
+      const otherSlot = slot === 'p1' ? 'p2' : 'p1'
+      f.rushAttack = null
+      this.input[slot].bufferedAttack = null
+      f.startedMove = false
+      if (start.isFromNeutral) f.faceTo(this[otherSlot], true)
+      this._keepInputs({ [otherSlot]: inputs[otherSlot] })
+      this._startSuper(f, start.key)
       return
     }
 
     this.prevX = new Map([[this.p1, this.p1.x], [this.p2, this.p2.x]]) // 最遠距離用：判斷這幀是誰往外移動
     // animStart 是 'after' 的絕招：鏡頭拉遠期間停在第 1 幀
-    if (!this._isWaitingSuperStart(this.p1)) this.p1.update(p1Input)
-    if (!this._isWaitingSuperStart(this.p2)) this.p2.update(this._getP2Input())
-    if (this.p1.usedRush) {
-      this.rushLife = 0
-      this.p1.usedRush = false
-    }
-    // 收招預約：開始出招就用掉；已經能動卻沒出招（例如在空中）就丟掉
-    if (this.p1.startedMove || this.p1.canAct) this.bufferedAttack = null
-    this.p1.startedMove = false
+    slots.forEach(slot => {
+      if (!this._isWaitingSuperStart(this[slot])) this[slot].update(inputs[slot])
+    })
+    slots.forEach(slot => {
+      const f = this[slot]
+      const st = this.input[slot]
+      if (f.usedRush) {
+        st.rushLife = 0
+        f.usedRush = false
+      }
+      // 收招預約：開始出招就用掉；已經能動卻沒出招（例如在空中）就丟掉
+      if (f.startedMove || f.canAct) st.bufferedAttack = null
+      f.startedMove = false
+    })
     this._updateDashThrough()
     this._checkGrabs()
     this._updateLock()
     this._resolvePush()
-    this.p1.faceTo(this.p2.x)
-    this.p2.faceTo(this.p1.x)
+    this._checkWallBounce()
 
+    // 轉身以雙方身體受擊框為準：先算判定框，有人轉身再重算一次
     this.scene.updateMatrixWorld()
     this.p1.updateBoxes()
     this.p2.updateBoxes()
+    const turned1 = this.p1.faceTo(this.p2)
+    const turned2 = this.p2.faceTo(this.p1)
+    if (turned1 || turned2) {
+      this.scene.updateMatrixWorld()
+      this.p1.updateBoxes()
+      this.p2.updateBoxes()
+    }
     this._checkHits()
     this.frameMeter.record([this.p1.getFrameType(), this.p2.getFrameType()])
 
     this._playStepSounds([this.p1, this.p2])
 
-    // 倒地音效：被打飛後第 knockdownSoundFrame 幀
+    // 倒地音效：被打飛後第 knockdownSoundFrame 幀（launch.slow 放慢時跟著往後）
     ;[this.p1, this.p2].forEach(f => {
-      if (f.state === 'down' && f.stateFrame === this.knockdownSoundFrame) this.sound.play('knockdown')
+      if (f.state === 'down' && f.stateFrame === Math.round(this.knockdownSoundFrame * f.flySlow)) this.sound.play('knockdown')
     })
   }
 
@@ -1108,12 +1527,13 @@ class FighterViewer {
       this._updateShake(this.params.paused ? 0 : realDelta * this.params.timeScale)
       this.hitEffect.update(this.params.paused ? 0 : realDelta * this.params.timeScale)
 
-      if (!this.cinematic) this._followCamera(realDelta)
+      if (this.hitCam) this._updateHitCamera(realDelta)
+      else if (!this.cinematic) this._followCamera(realDelta)
       this.hud.updateCoords(fighters)
     }
 
-    // 演出中由 _updateCinematic 控制鏡頭
-    if (!this.cinematic) this.controls.update()
+    // 演出中由 _updateCinematic 控制鏡頭、命中鏡頭中由 _updateHitCamera 控制
+    if (!this.cinematic && !this.hitCam) this.controls.update()
     this.hud.update(realDelta)
 
     this.renderer.render(this.scene, this.camera)

@@ -29,6 +29,7 @@ export class Sound {
     this.buffers = {} // name → AudioBuffer
     this.volumes = {} // name → 個別音量
     this.playing = new Set() // 播放中的 AudioBufferSourceNode，stopAll 用
+    this.groups = new Map() // 分組 → 播放中的 AudioBufferSourceNode（例如某個人物的招式音效，stopGroup 用）
 
     // 5. init
     this.init()
@@ -51,8 +52,11 @@ export class Sound {
 
   // public
 
-  /** @param {number} delay 延遲幾秒播放（現實時間） */
-  play(name, delay = 0) {
+  /**
+   * @param {number} delay 延遲幾秒播放（現實時間）
+   * @param {*} group 分組（任何值，例如 Fighter）：之後可用 stopGroup 只停這一組
+   */
+  play(name, delay = 0, group = null) {
     const buffer = this.buffers[name]
     if (!buffer || this.ctx.state !== 'running') return
     const source = this.ctx.createBufferSource()
@@ -67,7 +71,27 @@ export class Sound {
     }
     source.start(this.ctx.currentTime + delay)
     this.playing.add(source)
-    source.onended = () => this.playing.delete(source)
+    if (group != null) {
+      if (!this.groups.has(group)) this.groups.set(group, new Set())
+      this.groups.get(group).add(source)
+    }
+    source.onended = () => {
+      this.playing.delete(source)
+      this.groups.get(group)?.delete(source)
+    }
+  }
+
+  /** 停止某一組播放中（含排程延遲播放）的音效 */
+  stopGroup(group) {
+    this.groups.get(group)?.forEach(source => {
+      try {
+        source.stop()
+      } catch {
+        // 還沒開始的排程音效在部分瀏覽器 stop 會丟錯，忽略
+      }
+      this.playing.delete(source)
+    })
+    this.groups.delete(group)
   }
 
   /** 停止所有播放中（含排程延遲播放）的音效 */
@@ -79,7 +103,9 @@ export class Sound {
         // 還沒開始的排程音效在部分瀏覽器 stop 會丟錯，忽略
       }
     })
-    this.playing.clear()  }
+    this.playing.clear()
+    this.groups.clear()
+  }
 
   setVolume(volume) {
     this.volume = volume
