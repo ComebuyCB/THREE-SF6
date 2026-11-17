@@ -639,13 +639,6 @@ export class Fighter {
     return body ? body.box.getCenter(point) : point.set(target.x, 1, 0)
   }
 
-  /** 頭部骨頭的世界座標（頭頂文字用）；找不到頭骨就用身高估算 */
-  getHeadPosition(target = new THREE.Vector3()) {
-    const head = this._getBone('Head')
-    if (head) return head.getWorldPosition(target)
-    return target.set(this.x, this.y + this.characterHeight * 0.92, 0)
-  }
-
   /**
    * 記錄這一段已命中
    * @returns {boolean} 是否要把對手打飛（launch 招式的最後一段）

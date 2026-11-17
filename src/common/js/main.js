@@ -9,7 +9,7 @@ import { Stage } from './stage.js'
 import { Hud } from './hud.js'
 import { Sound } from './sound.js'
 import { HitEffect } from './hitEffect.js'
-import { HeadLabel } from './headLabel.js'
+import { FootMarker } from './footMarker.js'
 import { addSmileMorph } from './faceMorph.js'
 import { FighterAI } from './ai.js'
 
@@ -306,8 +306,8 @@ class FighterViewer {
 
   /** 介面區塊顯示 / 隱藏（GUI「介面顯示」） */
   _setUiVisible(key, isVisible) {
-    const selectors = { frameMeter: '#frameMeter', keys: '.index_keys', combo: '#comboP1' }
-    document.querySelector(selectors[key])?.classList.toggle('is_uiHide', !isVisible)
+    const selectors = { frameMeter: '#frameMeter', keys: '.index_keys', combo: '.index_combo' }
+    document.querySelectorAll(selectors[key]).forEach(el => el.classList.toggle('is_uiHide', !isVisible))
   }
 
   /** 畫面左下的按鍵示意：按著的鍵亮起 */
@@ -344,7 +344,7 @@ class FighterViewer {
       showSkeleton: this.params.showSkeleton,
     })
     this.params[slot] = name
-    if (slot === 'p1') this.headLabel.setTagTarget(this.p1)
+    if (slot === 'p1') this.footMarker.setTarget(this.p1)
     if (this.p1 && this.p2) {
       this.p1.opponent = this.p2
       this.p2.opponent = this.p1
@@ -480,8 +480,8 @@ class FighterViewer {
 
     this.stage = new Stage({ scene: this.scene, halfWidth: this.stageHalfWidth, showRuler: this.params.showCoords, showGround: this.params.showGround })
     this.hitEffect = new HitEffect({ scene: this.scene })
-    // 頭上文字：P1 頭上的 you（demo 用）、絕招發動時的絕招名
-    this.headLabel = new HeadLabel({ scene: this.scene, camera: this.camera })
+    // P1 腳底的淡藍色橢圓（範圍同推擠框）
+    this.footMarker = new FootMarker({ scene: this.scene })
     this.hud = new Hud({ camera: this.camera, canvas: this.renderer.domElement, showCoords: this.params.showCoords })
   }
 
@@ -994,14 +994,14 @@ class FighterViewer {
 
       const slot = attacker === this.p1 ? 'p1' : 'p2'
       this.combos[slot] = isCombo ? this.combos[slot] + 1 : 1
-      this.hud.setCombo(this.combos[slot])
+      this.hud.setCombo(slot, this.combos[slot])
     })
 
     // 對手恢復自由 = 連段結束
     ;['p1', 'p2'].forEach(slot => {
       if (this.combos[slot] && this._getOpponent(this[slot]).canAct) {
         this.combos[slot] = 0
-        if (!this.combos.p1 && !this.combos.p2) this.hud.setCombo(0)
+        this.hud.setCombo(slot, 0)
       }
     })
   }
@@ -1144,7 +1144,6 @@ class FighterViewer {
 
     this.cinematic = { fighter, time: 0, frozenSteps: 0, animStart: this._getSuperAnimStart(fighter.moves[key]), fromTarget, fromOffset, zoomPos, zoomTarget }
     this.controls.enabled = false
-    this.headLabel.showTitle(fighter, fighter.moves[key].name)
   }
 
   /**
@@ -1218,7 +1217,6 @@ class FighterViewer {
       this.cinematic = null
     }
     if (this.superSpot) this.superSpot.light.intensity = 0
-    this.headLabel.clearTitle()
     this.superDim = 0
     this._applyStageLight()
     this._applySuperFog(0)
@@ -1235,7 +1233,8 @@ class FighterViewer {
     this.ai.p1.reset()
     this.ai.p2.reset()
     this.combos = { p1: 0, p2: 0 }
-    this.hud.setCombo(0)
+    this.hud.setCombo('p1', 0)
+    this.hud.setCombo('p2', 0)
     this.sound.stopAll()
     this.p1.resetToIdle()
     this.p2.resetToIdle()
@@ -1380,7 +1379,6 @@ class FighterViewer {
     this._applySuperFog(backT > 0 ? Math.max(0, 1 - backT / zoomOut) : 1)
 
     if (t >= zoomIn + hold + zoomOut) {
-      this.headLabel.hideTitle()
       spot.intensity = 0
       this.superDim = 0
       this._applyStageLight()
@@ -1528,8 +1526,8 @@ class FighterViewer {
       if (this.hitCam) this._updateHitCamera(realDelta)
       else if (!this.cinematic) this._followCamera(realDelta)
       this.hud.updateCoords(fighters)
-      // 鏡頭與人物姿勢都更新完才放文字（絕招名的位置看鏡頭方向）
-      this.headLabel.update(realDelta)
+      // 人物位置更新完才對齊腳底橢圓
+      this.footMarker.update()
     }
 
     // 演出中由 _updateCinematic 控制鏡頭、命中鏡頭中由 _updateHitCamera 控制
