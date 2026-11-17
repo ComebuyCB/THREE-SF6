@@ -83,7 +83,7 @@ export class Fighter {
       /**
        * 招式數據（幀）：總幀數 = 動畫長度；前搖 startup、收招 recovery，中間全部是攻擊判定
        * hitStun：命中後對手的硬直幀數
-       * hitstop：命中 / 被防禦時雙方停頓幾幀（頓幀）；沒填用 main.js 的 hitstopFrames
+       * hitstop：命中 / 被防禦時雙方停頓幾幀（頓幀）；沒填用 main.js 的 hitstopFrames；絕招命中一律不頓幀（被防禦照常）
        *   參考：輕拳 6、中拳 7、重拳 8
        * hitShake：命中時被打中的人在頓幀期間搖晃；true = 搖 main.js hitShake.cycles 次，數字 = 搖幾次
        * chainCancel：預約。攻擊判定第 1 幀的前 chainEarly 幀 ~ 攻擊判定最後 1 幀之間，
@@ -128,6 +128,9 @@ export class Fighter {
        *   reverse：打飛方向反過來（對手先轉身再往後飛）
        *   wallBounce：撞到邊界牆（或兩人最遠距離）時反彈，數字 = 反彈力度（剩下的飛行距離 × 倍率往回飛）；沒填或 0 = 不反彈
        *     例：distance 6、wallBounce 0.75，一開始就貼牆 → 往回飛 6 × 0.75 = 4.5 公尺
+       * cameraShake：命中時鏡頭晃動幅度（公尺，參考 0.02 ~ 0.1），被防禦不晃；長度見 main.js cameraShake
+       *   絕招沒填 = 每段 main.js cameraShake.superAmplitude（絕招命中不頓幀，改用晃鏡頭）；一般招式沒填 = 不晃
+       *   數字 = 每一段都晃；陣列 = 依段數（hits 的順序）個別設定，0 或沒填的段不晃，例：[0, 0.03, 0, 0.08]
        * isSuper：絕招，出招時有鏡頭演出；GUI「招式選取」只列出絕招
        * animStart：絕招從演出的哪個時間點開始播（之前停在第 1 幀，招式幀數也不推進）
        *   'zoomIn' 鏡頭拉近時（預設）/ 'hold' 凍結停留時 / 'zoomOut' 鏡頭拉遠時（遊戲恢復）/ 'after' 鏡頭拉遠後
@@ -158,13 +161,13 @@ export class Fighter {
         heavy: { name: '重攻擊', startup: 20, recovery: 15, hitStun: 35, blockStun: 20, hitstop: 8, chainCancel: 6, chainMirror: true, hitShake: true, heavyHitEffect: true, knockback: 2.2, hitBones: ['LeftHand'] }, // Punching_H 是左手出拳
         // 空中重攻擊（MmaKick，20 幀）：第 10 幀發生，攻擊判定持續到落地
         airHeavy: { name: '空中重攻擊', startup: 9, recovery: 0, hitStun: 35, blockStun: 20, hitstop: 8, hitShake: true, knockback: 2.5, holdUntilLand: true, hitLimb: { from: 'LeftLeg', to: 'LeftFoot', width: 0.25, extend: 0.12 } }, // MmaKick 是左腳踢出、右腳在下；判定是左小腿（膝蓋 → 腳踝再延伸到腳尖）
-        dog_bear: { name: 'dog_bear', isSuper: true, cutSounds: true, hitCamera: { angle: 120, height: -0.2, lookAhead: { x: 0.3, y: -0.3 } }, length: 420, animStart: 'zoomOut', sounds: [{ name: 'dog_bear_title', frame: 1 }, { name: 'dog_bear', frame: 10, delay: 0.1 }], advance: { from: 1, to: 15, distance: 2 }, hits: [18, 68, 103, 153, 198, 243, 293, 328], hitFrames: 10, hitStun: 60, blockStun: 30, knockback: 0, rootMotion: true, launch: { distance: 3, height: 3, slow: 1.5 }, lock: { distance: 0.75 } },
-        kick_ball: { name: 'kick_ball', isSuper: true, length: 280, sounds: [{ name: 'kick_ball_title', frame: 1 }], grab: { from: 44, to: 49, range: 1, distance: 0.6, stunFrame: 10 }, hits: [171], hitFrames: 11, hitStun: 30, knockback: 2, rootMotion: true, launch: { distance: 10, height: 1.5, slow: 1.5, wallBounce: 1.5 }, hitBones: ['LeftFoot', 'RightFoot'] },
-        monkey_turn: { name: 'monkey_turn', isSuper: true, startup: 17, recovery: 40, hitStun: 30, knockback: 2, rootMotion: true, launch: true },
+        kick_ball: { name: '浪子踢球', isSuper: true, length: 280, sounds: [{ name: 'kick_ball_title', frame: 1 }], grab: { from: 44, to: 49, range: 1, distance: 0.6, stunFrame: 10 }, hits: [171], hitFrames: 11, hitStun: 30, knockback: 2, rootMotion: true, launch: { distance: 10, height: 1.5, slow: 1.5, wallBounce: 1.5 }, hitBones: ['LeftFoot', 'RightFoot'] },
+        monkey_turn: { name: '猴子繞花線', isSuper: true, startup: 17, recovery: 40, hitStun: 30, knockback: 2, rootMotion: true, launch: true },
         // wind_step：動畫前 60 幀 2 倍速（main.js speedAnims），鏡頭拉遠時才往前跳，第 30 幀落地開始打
-        wind_step: { name: 'wind_step', isSuper: true, animStart: 'hold', sounds: [{ name: 'wind_step_title', frame: 1 }], advance: { from: 1, to: 30, distance: 3, height: 0.2, afterFreeze: true }, hits: [30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170], hitFrames: 2, hitStun: 60, blockStun: 30, knockback: 0, launch: { distance: 3 }, lock: { distance: 0.75 } },
-        shake_head: { name: 'shake_head', isSuper: true, cutSounds: true, hitCamera: { angle: 60, height: 0.2, lookAhead: { x: 0.3, y: -0.3 } }, animStart: 'zoomOut', hitBones: ['RightHand'], sounds: [{ name: 'shake_head_title', frame: 1 }, { name: 'shake_head', frame: 2 }], faceCamera: true, advance: { from: 2, to: 418, distance: 1.5 }, hits: [[8, 18], [48, 58], [93, 103], [143, 153], [183, 193], [223, 233], [273, 283], [318, 328], [378, 418]], hitStun: 80, blockStun: 50, knockback: 0, launch: { distance: 8, wallBounce: 1 }, lock: { distance: 0.75, juggle: { fromHit: 8, maxFrame: 20, maxHeight: 1, minFrame: 60, minHeight: 0.6, animHold: 60, animRestart: 2 } } },
-        dodge_step: { name: 'dodge_step', isSuper: true, sounds: [{ name: 'dodge_step_title', frame: 1 }], faceCamera: true, length: 40, firstPassDelay: 48, repeatOnHit: { at: 30, times: 4 }, dashThrough: { from: 5, to: 14, gap: 0.8, lastDistance: 4 }, hits: [[5, 14]], hitStun: 45, knockback: 0, launch: { distance: 4, reverse: true }, hitBones: ['LeftHand', 'RightHand', 'Spine2'], noRearHand: true, },
+        wind_step: { name: '風擺柳碎布', isSuper: true, animStart: 'hold', sounds: [{ name: 'wind_step_title', frame: 1 }], advance: { from: 1, to: 30, distance: 3, height: 0.2, afterFreeze: true }, hits: [30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170], hitFrames: 2, hitStun: 60, blockStun: 30, knockback: 0, launch: { distance: 3 }, lock: { distance: 0.75 } },
+        dog_bear: { name: '狗熊哆嗦毛', isSuper: true, cutSounds: true, cameraShake: [0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.08], length: 415, animStart: 'zoomOut', sounds: [{ name: 'dog_bear_title', frame: 1 }, { name: 'dog_bear', frame: 5, delay: 0.35 }], advance: { from: 1, to: 10, distance: 2 }, hits: [15, 65, 108, 151, 196, 238, 284, 325], hitFrames: 10, hitStun: 60, blockStun: 30, knockback: 0, rootMotion: true, launch: { distance: 3, height: 3, slow: 1.5 }, lock: { distance: 0.75 } },
+        shake_head: { name: '搖頭晃腦', isSuper: true, cutSounds: true, cameraShake: [0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.05, 0.5], hitCamera: { angle: 60, height: 0.2, lookAhead: { x: 0.3, y: -0.3 } }, animStart: 'zoomOut', hitBones: ['RightHand'], sounds: [{ name: 'shake_head_title', frame: 1 }, { name: 'shake_head', frame: 2, delay: 0.35 }], faceCamera: true, advance: { from: 2, to: 418, distance: 1.5 }, hits: [8, 50, 96, 146, 186, 226, 276, 320, [378, 408]], hitFrames: 10, hitStun: 80, blockStun: 50, knockback: 0, launch: { distance: 8, wallBounce: 1 }, lock: { distance: 0.75, juggle: { fromHit: 8, maxFrame: 20, maxHeight: 1, minFrame: 60, minHeight: 0.6, animHold: 60, animRestart: 2 } } },
+        dodge_step: { name: '閃身步', isSuper: true, sounds: [{ name: 'dodge_step_title', frame: 1 }], faceCamera: true, length: 40, firstPassDelay: 48, repeatOnHit: { at: 30, times: 4 }, dashThrough: { from: 5, to: 14, gap: 0.8, lastDistance: 4 }, hits: [[5, 14]], hitStun: 45, knockback: 0, launch: { distance: 4, reverse: true }, hitBones: ['LeftHand', 'RightHand', 'Spine2'], noRearHand: true, },
       },
       hitBones: ['LeftHand', 'RightHand'], // 預設攻擊判定骨頭
       /**

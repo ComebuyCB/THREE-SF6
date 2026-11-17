@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import GUI from 'three/addons/libs/lil-gui.module.min.js'
-import { GroundedSkybox } from 'three/addons/objects/GroundedSkybox.js'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { Fighter, FPS } from './fighter.js'
 import { FrameMeter } from './frameMeter.js'
 import { MixamoLoader } from './mixamoLoader.js'
@@ -32,11 +32,15 @@ class FighterViewer {
       el: '#stage',
       characters: [
         { name: 'Meshy', url: `${MODEL_DIR}/characters/meshy.glb`, brightness: 1.35, smile: { corners: [[-0.034, 1.556], [0.034, 1.556]], radius: 0.014, lift: 0.007, outward: 0.003, back: 0.002, minZ: 0.05 } },
+        { name: 'Meshy_old', url: `${MODEL_DIR}/characters/meshy_old.glb`, brightness: 1.35, smile: { corners: [[-0.034, 1.556], [0.034, 1.556]], radius: 0.014, lift: 0.007, outward: 0.003, back: 0.002, minZ: 0.05 } },
         { name: 'Bladman', url: `${MODEL_DIR}/characters/bladman.glb` },
         { name: 'Erika', url: `${MODEL_DIR}/characters/erika.glb` },
         { name: 'Remy', url: `${MODEL_DIR}/characters/remy.glb` },
-        // Meshy 匯出（Mixamo 骨架範本）；brightness：材質顏色倍率（貼圖偏暗）
+        // Meshy：AccuRIG 重新綁骨架（骨頭改成 mixamorig 名稱，手只有拇指、食指）；Meshy_old：Meshy 匯出（Mixamo 骨架範本）
+        // brightness：材質顏色倍率（貼圖偏暗）
         // smile：程式推嘴角做出微笑（模型沒有表情，見 faceMorph.js），座標是模型原始網格座標（公尺）
+        // Yvonne：AccuRIG 綁骨架、骨頭改成 mixamorig 名稱；角與頭髮比頭頂高約 19 公分，height 算進去，身體才跟其他人物差不多高
+        { name: 'Yvonne', url: `${MODEL_DIR}/characters/yvonne.glb`, height: 1.93 },
       ],
       // 所有人物共用的動作（Mixamo 下載時選 Without Skin）；key 對應 Fighter 的狀態與招式（moves）
       anims: {
@@ -65,7 +69,7 @@ class FighterViewer {
       // 裁掉動作開頭 start / 結尾 end 幾幀（遊戲幀），不改 FBX 檔；招式的 startup / recovery / hits 照裁切後的幀數
       trimAnims: {
         // Rokoko 匯出的絕招第 0 幀是 T 字形：裁掉 2 幀（= 30F 檔的第 0 幀），絕招停頓時才不會看到
-        dog_bear: { start: 2, end: 10 },
+        dog_bear: { start: 7, end: 10 }, // 開頭多裁 5 幀（招式幀數已跟著往前挪）
         kick_ball: { start: 2 },
         monkey_turn: { start: 2 },
         shake_head: { start: 2 },
@@ -81,14 +85,26 @@ class FighterViewer {
       speedAnims: {
         wind_step: { to: 60, rate: 2 }, // 跳躍段（前 60 幀）2 倍速 → 30 幀落地
       },
-      // 背景：2:1 全景圖，用 GroundedSkybox 投影成「有地面的半球」，鏡頭移動時有遠近感；GUI 可切換
-      skyboxes: {
+      // 3D 場景（GUI 可切換）：
+      //   model = GLB；ground = 地面平面 y = a·x + b·z + c（模型原始座標，公尺），載入後轉平、對齊 y = 0，人物才會剛好站在地上
+      //   transform = 預設擺放（切換到這個場景時套用，之後可在 GUI 調）：x / y / z 位移（公尺）、rotation 水平轉動（度）、scale 大小
+      //     z 正數 = 場景往鏡頭方向移（人物站到模型裡比較後面的位置）
+      scenes: {
+        庭院: { model: `${MODEL_DIR}/background/courtyard.glb`, ground: [0.0252, -0.0414, 0.6321], transform: { x: -0.3, y: -0.03, z: 4, rotation: 0, scale: 0.9 } },
+        // 模型中央是房子與門口台階：往後移，人物站在房子前的空地，房子當背景
+        閥門房: { model: `${MODEL_DIR}/background/bayard_station_valve_house.glb`, ground: [0.0013, -0.0167, 9.416], transform: { x: 1.5, y: -0.05, z: -8.1, rotation: 0, scale: 0.9 } },
+        // 人物站在橋下的地面
+        橋下: { model: `${MODEL_DIR}/background/rick_roll_bridge.glb`, ground: [0.0049, 0.0115, -4.9441], transform: { x: 0, y: -0.03, z: 0, rotation: 0, scale: 1 } },
+      },
+      // 天空（GUI 可切換）：2:1 全景圖，當作無限遠的背景，3D 場景沒擋住的地方看得到
+      skies: {
+        晴天: 'src/common/img/DaySkyHDRI026A_4K_TONEMAPPED.jpg',
         機庫外陰天: 'src/common/img/hanger_exterior_cloudy.webp',
-        修道院迴廊: 'src/common/img/historic_cloister_passage.webp',
       },
       dashTapWindow: 250, // 連按兩下方向鍵的間隔（毫秒）內算衝刺
+      timeScaleStep: 0.1, // 遊戲速度快捷鍵（- / =）每按一下調多少
       characterHeight: 1.75, // 人物身高（公尺）：模型原始尺寸不同，載入後縮放成一致；characters 可個別填 height
-      stageHalfWidth: 6, // 場地邊界 x = ±6
+      stageHalfWidth: 7.5, // 場地邊界 x = ±7.5
       startGap: 1.6, // 開場兩人距離
       maxDistance: 5, // 兩人最遠距離（公尺），超過時往外移動的一方被擋住
       rushInputFrames: 8, // 衝刺取消鍵按下後記住幾幀：跟出招鍵差幾幀內按都算
@@ -97,6 +113,9 @@ class FighterViewer {
       hitstopFrames: 3, // 命中時雙方停頓幀數（頓幀）；招式有填 hitstop 時用招式的
       // 受擊搖晃（招式有 hitShake 才搖）：被打中的人在頓幀期間沿 z 軸來回搖 cycles 次（頓幀越長搖得越慢）
       hitShake: { cycles: 2, amplitude: 0.15 },
+      // 鏡頭晃動：命中時鏡頭上下左右抖 frames 幀、每秒 frequency 次，幅度線性減弱到 0
+      // 招式有 cameraShake 照招式的；沒填的絕招用 superAmplitude（絕招命中不頓幀，改用晃鏡頭表現打擊感），一般招式不晃
+      cameraShake: { frames: 12, frequency: 25, superAmplitude: 0.03 },
       // 音效：一般招式命中 hit、絕招命中 superHit、防禦住 block、倒地 knockdown；其他 key 給招式的 sounds 用；{ url, volume } 可個別調音量
       sounds: {
         hit: { url: `${SOUND_DIR}/hit2.mp3`, volume: 0.8 },
@@ -124,8 +143,8 @@ class FighterViewer {
         dimLevel: 0.5, // 演出時場地燈光、背景變暗到原本的幾成（跟聚光燈同步淡入淡出）；1 = 不變暗
         // 演出時場地的霧（人物不受影響）：離鏡頭 fogNear ~ fogFar 公尺漸濃，鏡頭拉回時淡掉
         fogColor: 0x15161c,
-        fogNear: 5,
-        fogFar: 50,
+        fogNear: 2,
+        fogFar: 40,
       },
       // 命中鏡頭（招式的 hitCamera）的預設值；招式填物件可個別覆蓋。距離同 superCamera.distance
       hitCamera: {
@@ -145,9 +164,9 @@ class FighterViewer {
         medium: 'Numpad8',
         heavy: 'Numpad9',
         rush: 'Numpad0', // 輕 / 中 / 重攻擊打中後：發光 + 往前衝刺；預約時段內先按會在打中時觸發
-        super: 'Numpad6', // 招式由 GUI「招式選取」決定
-        // 固定招式的絕招鍵：按鍵 → 招式 key（Numpad3 保留給之後的絕招）
-        supers: { Numpad1: 'dog_bear', Numpad2: 'shake_head', Numpad4: 'dodge_step', Numpad5: 'kick_ball' },
+        super: 'Numpad3', // 招式由 GUI「招式選取」決定
+        // 固定招式的絕招鍵：按鍵 → 招式 key
+        supers: { Numpad1: 'dog_bear', Numpad2: 'shake_head', Numpad4: 'dodge_step', Numpad5: 'kick_ball', Numpad6: 'wind_step' },
       },
       p2Keys: {
         left: 'ArrowLeft',
@@ -190,13 +209,16 @@ class FighterViewer {
     this.ai = { p1: new FighterAI(), p2: new FighterAI() } // GUI 勾選「AI 操作」時由 AI 按鍵
     this.pendingDash = { p1: 0, p2: 0 } // 連按兩下方向鍵：衝刺方向（世界座標），下一幀遊戲邏輯取走
     this.lastTap = { p1: { code: '', time: 0 }, p2: { code: '', time: 0 } } // 上一次按下的方向鍵，判斷連按用
-    this.skyboxCache = {} // 背景名稱 → texture
-    this.skybox = null // GroundedSkybox mesh
+    this.skyCache = {} // 天空名稱 → texture
+    this.envModel = null // 目前的 3D 場景模型（Group）
+    this.envCache = {} // 場景名稱 → Promise<Group>，同一個場景模型只載入一次
     this.cameraPull = 0 // 跳躍時鏡頭額外往後拉的距離
     this.hitCam = null // 命中鏡頭中：{ attacker, move, phase: 'in' / 'out', time, fromPos, fromTarget, base: { target, offset } }
     this.hitstopTimer = 0 // 剩餘頓幀數
     this.rushFreeze = null // 衝刺取消停頓中：{ fighter, frame }，停頓到第 animStartFrame 幀開始播衝刺動畫
     this.shake = null // 受擊搖晃中：{ fighter, time, duration }（秒）
+    this.camShake = null // 鏡頭晃動中：{ amp, time, duration, phase }（秒）
+    this.camShakeOffset = new THREE.Vector3() // 這個畫面加在鏡頭上的晃動位移（渲染後扣回去）
     this.accumulator = 0 // 尚未消化的時間，累積滿 1/60 秒就推進 1 幀
     this.superDim = 0 // 絕招演出的變暗程度（0 = 正常、1 = 暗到 dimLevel）
     this.superFog = null // 絕招演出的場地霧（THREE.Fog），平常推到很遠等於沒有霧
@@ -210,22 +232,26 @@ class FighterViewer {
     this.params = {
       p1: this.characters[0].name,
       p2: this.characters[1].name,
-      superMove: 'wind_step',
+      superMove: 'monkey_turn', // 3 鍵的絕招（其他絕招都有固定按鍵）
       p2Guard: false, // P2 木樁一直按著後（防禦）
       p1AI: false, // P1 由 AI 操作
       p2AI: false, // P2 由 AI 操作
-      skybox: '機庫外陰天',
-      skyboxHeight: 2, // 全景圖拍攝時相機離地高度（公尺）：越小地面看起來越近、景物越大
-      skyboxRadius: 40, // 半球半徑（公尺）：超出的部分是天空
-      skyboxRotation: 16, // 場景水平轉動角度（度）：轉全景圖，讓想要的景物對著鏡頭
+      scene: '閥門房',
+      sky: '晴天',
+      skyRotation: 16, // 天空水平轉動角度（度）
+      // 目前 3D 場景的擺放（切換場景時換成該場景的 transform）：水平轉動（度）、位移（公尺；y 負數 = 往下）、大小倍率
+      envRotation: 0,
+      envOffsetX: 0,
+      envOffsetY: 0,
+      envOffsetZ: 0,
+      envScale: 1,
       showGround: true, // 影子地板
       timeScale: 1,
       paused: false,
       moveSpeed: 2,
-      showCoords: true,
-      // 介面顯示：GUI 勾選開關，key 對到 _setUiVisible 的區塊
-      ui: { frameMeter: true, keys: true, combo: true },
-      showDebug: true,
+      showDebug: true, // 除錯顯示（O）：X 軸刻度尺與座標 + 判定框
+      showUi: true, // 介面顯示（I）：幀數表、左下按鍵與操作說明
+      showCombo: true, // 連段數顯示（不受 I 影響）
       showSkeleton: false,
     }
 
@@ -270,6 +296,15 @@ class FighterViewer {
       }
       if (!e.repeat && e.code === 'KeyP') this._togglePause()
       if (!e.repeat && e.code === 'Escape') this.resetAll()
+      // 介面 / 除錯 / AI / 遊戲速度快捷鍵；在 GUI 輸入框打字時不觸發
+      if (!e.target.closest?.('input, textarea, select')) {
+        if (!e.repeat && e.code === 'KeyO') this._setDebugVisible(!this.params.showDebug)
+        if (!e.repeat && e.code === 'KeyI') this._setUiVisible(!this.params.showUi)
+        if (!e.repeat && e.code === 'KeyU') this._toggleAllAI()
+        // 遊戲速度：主鍵盤 Backspace 左邊的 - / =（數字鍵盤的 - + 不算，e.code 不同）；按住會連續調
+        if (e.code === 'Minus') this._changeTimeScale(-this.timeScaleStep)
+        if (e.code === 'Equal') this._changeTimeScale(this.timeScaleStep)
+      }
       // 方向鍵、空白鍵預設會捲動頁面（空白鍵也會按到 GUI 上有焦點的按鈕）
       if (Object.values(this.p2Keys).includes(e.code) || [this.p1Keys.jump].flat().includes(e.code)) e.preventDefault() // ↓ 也會捲動頁面
       this.keys.add(e.code)
@@ -304,10 +339,50 @@ class FighterViewer {
     return e.code.startsWith('Numpad') && e.getModifierState('NumLock') && !/^\d$/.test(e.key)
   }
 
-  /** 介面區塊顯示 / 隱藏（GUI「介面顯示」） */
-  _setUiVisible(key, isVisible) {
-    const selectors = { frameMeter: '#frameMeter', keys: '.index_keys', combo: '.index_combo' }
-    document.querySelectorAll(selectors[key]).forEach(el => el.classList.toggle('is_uiHide', !isVisible))
+  /** 介面顯示 / 隱藏（I、GUI「顯示介面」）：幀數表、左下按鍵與操作說明一起（連段數另外開關，見 _setComboVisible） */
+  _setUiVisible(isVisible) {
+    this.params.showUi = isVisible
+    document.querySelectorAll('#frameMeter, .index_keys').forEach(el => el.classList.toggle('is_uiHide', !isVisible))
+    this.guiControllers?.showUi.updateDisplay()
+  }
+
+  /** 連段數顯示 / 隱藏（GUI「顯示連段數」） */
+  _setComboVisible(isVisible) {
+    this.params.showCombo = isVisible
+    document.querySelectorAll('.index_combo').forEach(el => el.classList.toggle('is_uiHide', !isVisible))
+  }
+
+  /** 除錯顯示（O、GUI「顯示除錯」）：X 軸刻度尺與座標、判定框一起 */
+  _setDebugVisible(isVisible) {
+    this.params.showDebug = isVisible
+    this.stage.setRulerVisible(isVisible)
+    this.hud.setCoordsVisible(isVisible)
+    ;[this.p1, this.p2].filter(Boolean).forEach(f => f.setDebugVisible(isVisible))
+    this.guiControllers?.showDebug.updateDisplay()
+  }
+
+  /** P1、P2 的 AI 操作一起開關（U）：兩個都開著就全部關掉，否則全部打開 */
+  _toggleAllAI() {
+    const isOn = !(this.params.p1AI && this.params.p2AI)
+    ;['p1', 'p2'].forEach(slot => {
+      if (this.params[`${slot}AI`] === isOn) return
+      this.params[`${slot}AI`] = isOn
+      this._resetAI(slot)
+    })
+    this.guiControllers?.p1AI.updateDisplay()
+    this.guiControllers?.p2AI.updateDisplay()
+  }
+
+  /** 遊戲速度加減（- / =），0 ~ 2 */
+  _changeTimeScale(delta) {
+    this.params.timeScale = Math.round(Math.min(2, Math.max(0, this.params.timeScale + delta)) * 100) / 100
+    this.guiControllers?.timeScale.updateDisplay()
+  }
+
+  /** 3 鍵的按鍵示意：顯示 GUI「招式選取」目前選的招式名稱 */
+  _updateSuperKeyLabel() {
+    const el = document.querySelector('#superKeyName')
+    if (el) el.textContent = this.params.superMove
   }
 
   /** 畫面左下的按鍵示意：按著的鍵亮起 */
@@ -360,47 +435,98 @@ class FighterViewer {
     this.input[slot] = this._newInputState()
   }
 
-  /** 切換背景：載入全景圖後投影成有地面的半球，載入過的會快取 */
-  setSkybox(name) {
-    const url = this.skyboxes[name]
+  /** 切換天空：全景圖當作無限遠的背景，載入過的會快取 */
+  setSky(name) {
+    const url = this.skies[name]
     if (!url) return
-    this.params.skybox = name
-
-    if (this.skyboxCache[name]) {
-      this._buildSkybox(this.skyboxCache[name])
+    this.params.sky = name
+    if (this.skyCache[name]) {
+      this._applySky(this.skyCache[name])
       return
     }
     new THREE.TextureLoader().load(url, texture => {
       texture.mapping = THREE.EquirectangularReflectionMapping
       texture.colorSpace = THREE.SRGBColorSpace
-      this.skyboxCache[name] = texture
+      this.skyCache[name] = texture
       // 載入期間又切到別張時不覆蓋
-      if (this.params.skybox === name) this._buildSkybox(texture)
+      if (this.params.sky === name) this._applySky(texture)
     })
   }
 
-  /** 依目前的高度、半徑重建半球（GroundedSkybox 的形狀在建立時決定，改參數要重建） */
-  _buildSkybox(texture = this.skyboxCache[this.params.skybox]) {
-    if (!texture) return
-    if (this.skybox) {
-      this.scene.remove(this.skybox)
-      this.skybox.geometry.dispose()
-      this.skybox.material.dispose()
-    }
-
-    const { skyboxHeight, skyboxRadius } = this.params
-    this.skybox = new GroundedSkybox(texture, skyboxHeight, skyboxRadius, 128)
-    // 半球的地面在 y = 0（官方範例：位置 = 高度 - 0.01，避免和陰影地板重疊閃爍）
-    this.skybox.position.y = skyboxHeight - 0.01
-    // 半球外不放全景圖（scene.background 維持純色），鏡頭拉出半球外時看得到球的外形
-    this.scene.add(this.skybox)
-    this._applySkyboxRotation()
+  _applySky(texture) {
+    this.scene.background = texture
+    this._applySkyRotation()
     this._applyStageLight()
   }
 
-  /** 場景水平轉動：轉全景圖半球 */
-  _applySkyboxRotation() {
-    if (this.skybox) this.skybox.rotation.y = THREE.MathUtils.degToRad(this.params.skyboxRotation)
+  /** 切換 3D 場景：載入完放進場景；地面自己會接影子，影子地板先藏起來（疊在一起會有兩層影子） */
+  setScene(name) {
+    const entry = this.scenes[name]
+    if (!entry) return
+    this.params.scene = name
+    const { x = 0, y = 0, z = 0, rotation = 0, scale = 1 } = entry.transform || {}
+    Object.assign(this.params, { envOffsetX: x, envOffsetY: y, envOffsetZ: z, envRotation: rotation, envScale: scale })
+    if (!this.envCache[name]) this.envCache[name] = this._loadEnvModel(name, entry)
+    this.envCache[name].then(group => {
+      if (!group || this.params.scene !== name) return // 載入期間又切到別的場景
+      if (this.envModel && this.envModel !== group) this.scene.remove(this.envModel)
+      this.envModel = group
+      this.scene.add(group)
+      this._applyEnvTransform()
+      this.stage?.setGroundVisible(false)
+    })
+  }
+
+  /**
+   * 載入 3D 場景模型：外層 Group 管 GUI 的轉動與高度（見 _applyEnvTransform），內層把地面平面轉平、往下移到 y = 0
+   * @returns {Promise<THREE.Group | null>} 載入失敗回傳 null（之後再選一次會重新載入）
+   */
+  async _loadEnvModel(name, { model, ground = [0, 0, 0] }) {
+    if (!this.isLoading) this._showLoading(true, name)
+    try {
+      const gltf = await new GLTFLoader().loadAsync(model, e => this._onProgress(e, name))
+      gltf.scene.traverse(obj => {
+        if (obj.isMesh) obj.receiveShadow = true
+      })
+      const [a, b, c] = ground
+      const level = new THREE.Group()
+      // 平面 y = a·x + b·z + c 的法線 (-a, 1, -b) 轉到正上方，平面上 (0, c, 0) 那點移到原點
+      level.quaternion.setFromUnitVectors(new THREE.Vector3(-a, 1, -b).normalize(), new THREE.Vector3(0, 1, 0))
+      level.position.set(0, c, 0).applyQuaternion(level.quaternion).negate()
+      level.add(gltf.scene)
+      const group = new THREE.Group()
+      group.add(level)
+      return group
+    } catch (err) {
+      console.warn(`[FighterViewer] 場景模型 ${model} 載入失敗`, err)
+      delete this.envCache[name]
+      return null
+    } finally {
+      if (!this.isLoading) this._showLoading(false)
+    }
+  }
+
+  /** 天空水平轉動 */
+  _applySkyRotation() {
+    this.scene.backgroundRotation.y = THREE.MathUtils.degToRad(this.params.skyRotation)
+  }
+
+  /** 3D 場景模型的水平轉動（繞場地中心）、位移與大小 */
+  _applyEnvTransform() {
+    if (!this.envModel) return
+    const { envRotation, envOffsetX, envOffsetY, envOffsetZ, envScale } = this.params
+    this.envModel.rotation.y = THREE.MathUtils.degToRad(envRotation)
+    this.envModel.position.set(envOffsetX, envOffsetY, envOffsetZ)
+    this.envModel.scale.setScalar(envScale)
+  }
+
+  /** 打鬥場地寬度（邊界 x = ±stageHalfWidth）：邊界牆、刻度尺、影子範圍一起更新；人物超出的話下一幀被推回邊界內 */
+  _applyStageWidth() {
+    this.stage.setHalfWidth(this.stageHalfWidth)
+    const cam = this.stageLights.dir.shadow.camera
+    cam.left = -this.stageHalfWidth - 2
+    cam.right = this.stageHalfWidth + 2
+    cam.updateProjectionMatrix()
   }
 
   /** 絕招演出的場地霧：amount 0 = 沒有霧（推到很遠）、1 = fogNear ~ fogFar */
@@ -413,7 +539,7 @@ class FighterViewer {
   }
 
   /**
-   * 場地亮度 = 絕招演出的變暗；環境光、主光、背景半球一起調整
+   * 場地亮度 = 絕招演出的變暗；環境光、主光、天空一起調整
    * 絕招聚光燈不受影響，演出時只有放絕招的人被照亮
    */
   _applyStageLight() {
@@ -422,7 +548,7 @@ class FighterViewer {
     const { hemi, dir, base } = this.stageLights
     hemi.intensity = base.hemi * dim
     dir.intensity = base.dir * dim
-    this.skybox?.material.color.setScalar(dim)
+    this.scene.backgroundIntensity = dim
   }
 
   // internal
@@ -435,8 +561,9 @@ class FighterViewer {
     this.stageEl.appendChild(this.renderer.domElement)
 
     this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(0x1b1d22)
-    this.setSkybox(this.params.skybox)
+    this.scene.background = new THREE.Color(0x1b1d22) // 天空載入前的底色
+    this.setSky(this.params.sky)
+    this.setScene(this.params.scene)
 
     this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100)
     this.camera.position.set(0, 1.4, 4.5)
@@ -478,11 +605,11 @@ class FighterViewer {
     this.superSpot = { light: spot, aim: new THREE.Vector3(0, 1.3, 0), peak: 60 }
     this.scene.add(spot, spot.target)
 
-    this.stage = new Stage({ scene: this.scene, halfWidth: this.stageHalfWidth, showRuler: this.params.showCoords, showGround: this.params.showGround })
+    this.stage = new Stage({ scene: this.scene, halfWidth: this.stageHalfWidth, showRuler: this.params.showDebug, showGround: this.params.showGround })
     this.hitEffect = new HitEffect({ scene: this.scene })
     // P1 腳底的淡藍色橢圓（範圍同推擠框）
     this.footMarker = new FootMarker({ scene: this.scene })
-    this.hud = new Hud({ camera: this.camera, canvas: this.renderer.domElement, showCoords: this.params.showCoords })
+    this.hud = new Hud({ camera: this.camera, canvas: this.renderer.domElement, showCoords: this.params.showDebug })
   }
 
   /** 連按兩下同一個方向鍵（間隔 dashTapWindow 內）= 衝刺 */
@@ -629,41 +756,42 @@ class FighterViewer {
 
     gui.add(this.params, 'p1', names).name('P1 角色').listen().onChange(v => this.setCharacter('p1', v))
     gui.add(this.params, 'p2', names).name('P2 角色').listen().onChange(v => this.setCharacter('p2', v))
-    gui.add(this.params, 'superMove', SUPER_ARTS).name('招式選取（6 鍵）')
+    gui.add(this.params, 'superMove', SUPER_ARTS).name('招式選取（3 鍵）').onChange(() => this._updateSuperKeyLabel())
+    this._updateSuperKeyLabel()
     gui.add(this.params, 'p2Guard').name('P2 木樁防禦')
-    gui.add(this.params, 'p1AI').name('P1 由 AI 操作').onChange(() => this._resetAI('p1'))
-    gui.add(this.params, 'p2AI').name('P2 由 AI 操作').onChange(() => this._resetAI('p2'))
+    this.guiControllers = {} // 快捷鍵改了數值時要更新顯示的控制項
+    this.guiControllers.p1AI = gui.add(this.params, 'p1AI').name('P1 由 AI 操作').onChange(() => this._resetAI('p1'))
+    this.guiControllers.p2AI = gui.add(this.params, 'p2AI').name('P2 由 AI 操作（U 全開 / 全關）').onChange(() => this._resetAI('p2'))
     gui.add(this.params, 'moveSpeed', 0.5, 5, 0.1).name('移動速度').onChange(v => {
       fighters().forEach(f => { f.moveSpeed = v })
     })
 
     const bgFolder = gui.addFolder('背景')
-    bgFolder.add(this.params, 'skybox', Object.keys(this.skyboxes)).name('場景').listen().onChange(v => this.setSkybox(v))
-    bgFolder.add(this.params, 'skyboxHeight', 0.5, 10, 0.1).name('拍攝高度').onFinishChange(() => this._buildSkybox())
-    bgFolder.add(this.params, 'skyboxRadius', 10, 200, 1).name('場景大小').onFinishChange(() => this._buildSkybox())
-    bgFolder.add(this.params, 'skyboxRotation', -180, 180, 1).name('場景轉動（度）').onChange(() => this._applySkyboxRotation())
-    bgFolder.add(this.params, 'showGround').name('顯示影子地板').onChange(v => this.stage.setGroundVisible(v))
+    const skyFolder = bgFolder.addFolder('天空盒')
+    skyFolder.add(this.params, 'sky', Object.keys(this.skies)).name('天空').listen().onChange(v => this.setSky(v))
+    skyFolder.add(this.params, 'skyRotation', 0, 360, 1).name('轉動（度）').onChange(() => this._applySkyRotation())
+
+    const sceneFolder = bgFolder.addFolder('場景')
+    sceneFolder.add(this.params, 'scene', Object.keys(this.scenes)).name('3D 場景').listen().onChange(v => this.setScene(v))
+    sceneFolder.add(this.params, 'envRotation', 0, 360, 1).name('轉動（度）').listen().onChange(() => this._applyEnvTransform())
+    sceneFolder.add(this.params, 'envOffsetX', -20, 20, 0.1).name('左右 X（m）').listen().onChange(() => this._applyEnvTransform())
+    sceneFolder.add(this.params, 'envOffsetY', -0.5, 0.5, 0.01).name('高度 Y（m）').listen().onChange(() => this._applyEnvTransform())
+    sceneFolder.add(this.params, 'envOffsetZ', -20, 20, 0.1).name('前後 Z（m）').listen().onChange(() => this._applyEnvTransform())
+    sceneFolder.add(this.params, 'envScale', 0.2, 3, 0.05).name('大小').listen().onChange(() => this._applyEnvTransform())
+    sceneFolder.add(this, 'stageHalfWidth', 2, 15, 0.5).name('打鬥場地半寬（m）').onChange(() => this._applyStageWidth())
+    sceneFolder.add(this.params, 'showGround').name('顯示影子地板').onChange(v => this.stage.setGroundVisible(v && !this.envModel))
+
     bgFolder.add(this.superCamera, 'dimLevel', 0, 1, 0.05).name('絕招時變暗到')
 
     const playFolder = gui.addFolder('播放設定')
-    playFolder.add(this.params, 'timeScale', 0, 2, 0.05).name('遊戲速度')
+    this.guiControllers.timeScale = playFolder.add(this.params, 'timeScale', 0, 2, 0.05).name('遊戲速度（- / =）')
     this.pauseController = playFolder.add(this.params, 'paused').name('暫停（P）')
 
-    // 介面顯示：取消勾選就隱藏該區塊
-    const uiFolder = gui.addFolder('介面顯示')
-    const uiNames = { frameMeter: '幀數表', keys: '按鍵與操作說明（左下）', combo: '連段數' }
-    Object.entries(uiNames).forEach(([key, name]) => {
-      uiFolder.add(this.params.ui, key).name(name).onChange(v => this._setUiVisible(key, v))
-    })
-
-    const debugFolder = gui.addFolder('除錯')
-    debugFolder.add(this.params, 'showCoords').name('顯示 X 軸與座標').onChange(v => {
-      this.stage.setRulerVisible(v)
-      this.hud.setCoordsVisible(v)
-    })
-    debugFolder.add(this.params, 'showDebug').name('顯示判定框').onChange(v => {
-      fighters().forEach(f => f.setDebugVisible(v))
-    })
+    const viewFolder = gui.addFolder('顯示')
+    this.guiControllers.showUi = viewFolder.add(this.params, 'showUi').name('顯示介面（I）').onChange(v => this._setUiVisible(v))
+    viewFolder.add(this.params, 'showCombo').name('顯示連段數').onChange(v => this._setComboVisible(v))
+    this.guiControllers.showDebug = viewFolder.add(this.params, 'showDebug').name('顯示除錯：座標與判定框（O）').onChange(v => this._setDebugVisible(v))
+    const debugFolder = viewFolder
     debugFolder.add(this.params, 'showSkeleton').name('顯示骨架').onChange(v => {
       fighters().forEach(f => f.setSkeletonVisible(v))
     })
@@ -732,7 +860,7 @@ class FighterViewer {
     let raw
 
     if (this.params[`${slot}AI`]) {
-      raw = this.ai[slot].think(fighter, this._getOpponent(fighter))
+      raw = this.ai[slot].think(fighter, this._getOpponent(fighter), this.stageHalfWidth)
       if (raw.attack) st.pendingAttack = raw.attack
       if (raw.rush) st.rushLife = this.rushInputFrames
     } else {
@@ -970,7 +1098,9 @@ class FighterViewer {
       attacker.onHitConfirm() // 衝刺取消、收招縮短、下一拳鏡像：防禦住的不算
       if (!isLaunch) this._applyCornerPush(attacker, target)
       this.sound.play(move.isSuper ? 'superHit' : 'hit') // 受擊確認：受擊硬直第一幀
-      this.hitstopTimer = move.hitstop ?? this.hitstopFrames
+      this._startCameraShake(this._getCameraShake(attacker))
+      // 絕招命中不頓幀，改成晃鏡頭（見 _getCameraShake）
+      this.hitstopTimer = move.isSuper ? 0 : move.hitstop ?? this.hitstopFrames
       if (move.hitShake) this._startShake(target, this.hitstopTimer, move.hitShake === true ? this.hitShake.cycles : move.hitShake)
 
       // 命中鏡頭：第 1 段打中時拉近，打飛那一下拉回
@@ -1161,6 +1291,45 @@ class FighterViewer {
     attacker.pushVelocity = -dir * (distance - room) * 8
   }
 
+  /**
+   * 招式這一段命中要不要晃鏡頭：cameraShake 是數字 = 每段都晃這個幅度；陣列 = 依段數（hits 的順序）個別設定，0 / 沒填 = 不晃
+   * 沒填 cameraShake 的絕招：每段都晃 superAmplitude
+   */
+  _getCameraShake(attacker) {
+    const move = attacker.getCurrentMove()
+    const shake = move?.cameraShake ?? (move?.isSuper ? this.cameraShake.superAmplitude : 0)
+    if (Array.isArray(shake)) return shake[attacker.hitWindow] || 0
+    return shake || 0
+  }
+
+  /** 開始鏡頭晃動（amp 公尺）；前一次還在晃時取比較大的幅度、從頭開始 */
+  _startCameraShake(amp) {
+    if (!amp) return
+    const remain = this.camShake ? this.camShake.amp * (1 - this.camShake.time / this.camShake.duration) : 0
+    this.camShake = { amp: Math.max(amp, remain), time: 0, duration: this.cameraShake.frames / FPS, phase: Math.random() * Math.PI * 2 }
+  }
+
+  /**
+   * 渲染前把晃動位移加到鏡頭上（渲染後由 _animate 扣回），不影響跟隨鏡頭、滑鼠操作與演出鏡頭的計算
+   * 上下、左右用不同頻率，看起來比較像震動而不是規律擺動
+   */
+  _applyCameraShake(delta) {
+    this.camShakeOffset.set(0, 0, 0)
+    const c = this.camShake
+    if (!c) return
+    c.time += delta
+    if (c.time >= c.duration) {
+      this.camShake = null
+      return
+    }
+    const k = c.amp * (1 - c.time / c.duration)
+    const w = Math.PI * 2 * this.cameraShake.frequency * c.time
+    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0)
+    const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1)
+    this.camShakeOffset.addScaledVector(right, k * Math.sin(w + c.phase)).addScaledVector(up, k * 0.8 * Math.sin(w * 1.37 + c.phase * 2))
+    this.camera.position.add(this.camShakeOffset)
+  }
+
   /** 受擊搖晃：頓幀 frames 幀內沿 z 軸搖完 cycles 次 */
   _startShake(fighter, frames, cycles = this.hitShake.cycles) {
     if (this.shake) this.shake.fighter.model.position.z = 0
@@ -1223,6 +1392,7 @@ class FighterViewer {
     this.hitEffect.clear()
     if (this.shake) this.shake.fighter.model.position.z = 0
     this.shake = null
+    this.camShake = null
     this.lock = null
     this.hitstopTimer = 0
     this.rushFreeze = null
@@ -1534,7 +1704,9 @@ class FighterViewer {
     if (!this.cinematic && !this.hitCam) this.controls.update()
     this.hud.update(realDelta)
 
+    this._applyCameraShake(this.params.paused ? 0 : realDelta * this.params.timeScale)
     this.renderer.render(this.scene, this.camera)
+    this.camera.position.sub(this.camShakeOffset) // 晃動只影響這個畫面
     // 還原成邏輯幀的姿勢，下一次 _step 從正確的狀態繼續
     fighters.forEach(f => f.restoreFrame())
   }

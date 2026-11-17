@@ -32,7 +32,7 @@ export class Stage {
     // 4. setup runtime state
     this.ruler = null
     this.ground = null
-    this.walls = []
+    this.bounds = null // 左右邊界牆 + 地上紅線（Group，改寬度時整組重建）
 
     // 5. init
     this.init()
@@ -51,6 +51,22 @@ export class Stage {
   setRulerVisible(isVisible) {
     this.showRuler = isVisible
     this.ruler.visible = isVisible
+  }
+
+  /** 改場地寬度：邊界牆、紅線、刻度尺重建 */
+  setHalfWidth(halfWidth) {
+    this.halfWidth = halfWidth
+    ;[this.bounds, this.ruler].forEach(obj => {
+      this.scene.remove(obj)
+      obj.traverse(o => {
+        o.geometry?.dispose()
+        o.material?.map?.dispose()
+        o.material?.dispose()
+      })
+    })
+    this._setupWalls()
+    this._setupRuler()
+    this.setRulerVisible(this.showRuler)
   }
 
   /** 影子地板顯示 / 隱藏（隱藏 = 地上沒有人物影子） */
@@ -75,6 +91,7 @@ export class Stage {
     const geo = new THREE.PlaneGeometry(2, this.wallHeight)
     const mat = new THREE.MeshBasicMaterial({ color: 0xff5566, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })
     const lineMat = new THREE.LineBasicMaterial({ color: 0xff5566 })
+    this.bounds = new THREE.Group()
 
     ;[-1, 1].forEach(side => {
       const x = side * this.halfWidth
@@ -86,9 +103,9 @@ export class Stage {
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, 0.01, -1), new THREE.Vector3(x, 0.01, 1)]),
         lineMat,
       )
-      this.walls.push(wall)
-      this.scene.add(wall, line)
+      this.bounds.add(wall, line)
     })
+    this.scene.add(this.bounds)
   }
 
   /** X 軸刻度尺：每 0.1 公尺短刻度、0.5 公尺中刻度、1 公尺標數字 */

@@ -67,7 +67,7 @@ export class FighterAI {
    * @returns {{ move: number, attack: string | null, rush: boolean, dash: number, jump: boolean, guard: boolean }}
    *   move / dash 是世界座標方向
    */
-  think(self, opp) {
+  think(self, opp, stageHalfWidth = 6) {
     this.frame++
     const out = { move: 0, attack: null, rush: false, dash: 0, jump: false, guard: false }
     const toward = Math.sign(opp.x - self.x) || self.facingSign
@@ -123,8 +123,8 @@ export class FighterAI {
     if (!this.plan || this.frame >= this.plan.until) this._makePlan(self, opp, dist, out, toward)
     if (out.attack || out.jump || out.dash) return out
     out.move = this.plan.move * toward
-    // 別一直退到牆邊
-    if (this.plan.move < 0 && Math.abs(self.x) > 5) out.move = 0
+    // 別一直退到牆邊（離邊界 1 公尺內就不再後退）
+    if (this.plan.move < 0 && Math.abs(self.x) > stageHalfWidth - 1) out.move = 0
     return out
   }
 
