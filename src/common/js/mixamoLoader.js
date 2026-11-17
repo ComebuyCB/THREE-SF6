@@ -7,6 +7,34 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 const BONE_PREFIX_RE = /^mixamorig\d*/
 const BONE_PREFIX = 'mixamorig'
 const HIPS = `${BONE_PREFIX}Hips`
+// 1×1 透明 PNG：動作 FBX 的貼圖都換成這張（見 _createAnimLoader）
+const BLANK_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+
+// 3ds Max Biped 骨架（Bip001_*，例如 QuickMagic 匯出的動作）→ Mixamo 骨頭名稱
+// Biped 的臀部拆成兩層：Bip001 管位移、Bip001_Pelvis 管旋轉；骨頭轉向由世界空間重定向處理，階層不同沒關係
+const BIPED_ROOT = 'Bip001'
+const BIPED_BONES = (() => {
+  const map = { Pelvis: 'Hips', Spine: 'Spine', Spine1: 'Spine1', Spine2: 'Spine2', Neck: 'Neck', Head: 'Head' }
+  const fingers = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'] // Finger0 ~ Finger4
+  ;[['L', 'Left'], ['R', 'Right']].forEach(([b, m]) => {
+    Object.assign(map, {
+      [`${b}_Clavicle`]: `${m}Shoulder`,
+      [`${b}_UpperArm`]: `${m}Arm`,
+      [`${b}_Forearm`]: `${m}ForeArm`,
+      [`${b}_Hand`]: `${m}Hand`,
+      [`${b}_Thigh`]: `${m}UpLeg`,
+      [`${b}_Calf`]: `${m}Leg`,
+      [`${b}_Foot`]: `${m}Foot`,
+      [`${b}_Toe0`]: `${m}ToeBase`,
+    })
+    fingers.forEach((finger, i) => {
+      map[`${b}_Finger${i}`] = `${m}Hand${finger}1`
+      map[`${b}_Finger${i}1`] = `${m}Hand${finger}2`
+      map[`${b}_Finger${i}2`] = `${m}Hand${finger}3`
+    })
+  })
+  return Object.fromEntries(Object.entries(map).map(([b, m]) => [`${BIPED_ROOT}_${b}`, `${BONE_PREFIX}${m}`]))
+})()
 
 /**
  * MixamoLoader：在瀏覽器讀人物（GLB 或 FBX）與動作 FBX，並把動作綁到人物上，動作可以給所有人物共用
@@ -42,6 +70,7 @@ export class MixamoLoader {
     // 4. setup runtime state
     this.loader = new FBXLoader()
     this.gltfLoader = new GLTFLoader()
+    this.animLoader = this._createAnimLoader()
     this.cache = {} // url → Promise，同一個檔案只下載一次
   }
 
@@ -53,7 +82,7 @@ export class MixamoLoader {
    */
   loadCharacter(url, onProgress) {
     const isGltf = this._isGltf(url)
-    return this._load(url, onProgress, result => {
+    return this._load(url, onProgress, this._isGltf(url) ? this.gltfLoader : this.loader, result => {
       const object = isGltf ? result.scene : result
       this._normalizeBones(object)
       // GLB 的材質在轉檔工具裡已修好；FBX 才需要轉換
@@ -71,14 +100,18 @@ export class MixamoLoader {
   }
 
   /**
-   * 載入動作 FBX（Mixamo 下載時選 Without Skin，或自己錄製、骨頭名稱沿用 mixamorig 的檔案）
+   * 載入動作 FBX（Mixamo 下載時選 Without Skin，或自己錄製、骨頭名稱沿用 mixamorig 的檔案；3ds Max Biped 骨架會自動改名）
    * 載入時就把動作在「原本的骨架」上播一遍，記下每幀每根骨頭的世界旋轉，供 bindAnimation 重定向
    * @returns {Promise<{ clip, hipsY, times, rest, frames }>}
    */
   loadAnimation(url, onProgress) {
-    return this._load(url, onProgress, object => {
-      this._normalizeBones(object)
+    return this._load(url, onProgress, this.animLoader, object => {
       const clip = object.animations[0]
+      if (object.getObjectByName(BIPED_ROOT)) {
+        const hipsY = this._mapBipedBones(object, clip)
+        return { clip, hipsY, ...this._sampleSource(object, clip) }
+      }
+      this._normalizeBones(object)
       clip.tracks.forEach(track => {
         track.name = track.name.replace(BONE_PREFIX_RE, BONE_PREFIX)
       })
@@ -160,12 +193,19 @@ export class MixamoLoader {
 
   // internal
 
-  _load(url, onProgress, parse) {
-    if (!this.cache[url]) {
-      const loader = this._isGltf(url) ? this.gltfLoader : this.loader
-      this.cache[url] = loader.loadAsync(url, onProgress).then(parse)
-    }
+  _load(url, onProgress, loader, parse) {
+    if (!this.cache[url]) this.cache[url] = loader.loadAsync(url, onProgress).then(parse)
     return this.cache[url]
+  }
+
+  /**
+   * 動作專用的 FBXLoader：只要骨架與動作，FBX 裡附帶的模型貼圖一律換成 1×1 透明圖，不去下載
+   * （例如 QuickMagic 匯出的動作一定帶著人物模型，貼圖沒放進專案就會一直 404）
+   */
+  _createAnimLoader() {
+    const manager = new THREE.LoadingManager()
+    manager.setURLModifier(url => (/\.(png|jpe?g|tga|bmp|gif|webp|dds|psd|tiff?)$/i.test(url.split('?')[0]) ? BLANK_IMAGE : url))
+    return new FBXLoader(manager)
   }
 
   _isGltf(url) {
@@ -244,6 +284,31 @@ export class MixamoLoader {
     if (dir.lengthSq() < 1e-10) return new THREE.Quaternion()
     // A 作用在人物靜止世界旋轉之前（左乘），所以在世界空間把人物方向轉到動作方向
     return new THREE.Quaternion().setFromUnitVectors(dir.normalize(), source.dir)
+  }
+
+  /**
+   * Biped 骨架改成 Mixamo 名稱（骨頭與旋轉 track；同名的重複骨頭一起改）
+   * 臀部位移在 Bip001 上：位移 track 改名給 Hips 用，Bip001 自己的旋轉 track 留著（取樣時 Pelvis 的世界旋轉才會對）
+   * 沒有對照的骨頭（ForeTwist、Nub、Footsteps）不改名，重定向時會被略過
+   * @returns {number} 靜止時臀部高度
+   */
+  _mapBipedBones(object, clip) {
+    object.traverse(obj => {
+      if (BIPED_BONES[obj.name]) obj.name = BIPED_BONES[obj.name]
+    })
+    clip.tracks = clip.tracks.filter(track => {
+      const [node, property] = track.name.split('.')
+      if (node === BIPED_ROOT && property === 'position') {
+        track.name = `${HIPS}.position`
+        return true
+      }
+      if (!BIPED_BONES[node]) return true
+      // Pelvis 的位移是相對 Bip001 的固定值，會跟上面的臀部位移撞名，丟掉
+      if (BIPED_BONES[node] === HIPS && property === 'position') return false
+      track.name = `${BIPED_BONES[node]}.${property}`
+      return true
+    })
+    return object.getObjectByName(BIPED_ROOT).position.y || 1
   }
 
   _normalizeBones(object) {

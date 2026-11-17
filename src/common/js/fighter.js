@@ -159,7 +159,7 @@ export class Fighter {
         // 空中重攻擊（MmaKick，20 幀）：第 10 幀發生，攻擊判定持續到落地
         airHeavy: { name: '空中重攻擊', startup: 9, recovery: 0, hitStun: 35, blockStun: 20, hitstop: 8, hitShake: true, knockback: 2.5, holdUntilLand: true, hitLimb: { from: 'LeftLeg', to: 'LeftFoot', width: 0.25, extend: 0.12 } }, // MmaKick 是左腳踢出、右腳在下；判定是左小腿（膝蓋 → 腳踝再延伸到腳尖）
         dog_bear: { name: 'dog_bear', isSuper: true, cutSounds: true, hitCamera: { angle: 120, height: -0.2, lookAhead: { x: 0.3, y: -0.3 } }, length: 420, animStart: 'zoomOut', sounds: [{ name: 'dog_bear_title', frame: 1 }, { name: 'dog_bear', frame: 10, delay: 0.1 }], advance: { from: 1, to: 15, distance: 2 }, hits: [18, 68, 103, 153, 198, 243, 293, 328], hitFrames: 10, hitStun: 60, blockStun: 30, knockback: 0, rootMotion: true, launch: { distance: 3, height: 3, slow: 1.5 }, lock: { distance: 0.75 } },
-        kick_ball: { name: 'kick_ball', isSuper: true, length: 240, sounds: [{ name: 'kick_ball_title', frame: 1 }], grab: { from: 44, to: 49, range: 1, distance: 0.6, stunFrame: 10 }, hits: [148], hitFrames: 11, hitStun: 30, knockback: 2, rootMotion: true, launch: { distance: 10, height: 1.5, slow: 1.5, wallBounce: 1.5 }, hitBones: ['LeftFoot', 'RightFoot'] },
+        kick_ball: { name: 'kick_ball', isSuper: true, length: 280, sounds: [{ name: 'kick_ball_title', frame: 1 }], grab: { from: 44, to: 49, range: 1, distance: 0.6, stunFrame: 10 }, hits: [171], hitFrames: 11, hitStun: 30, knockback: 2, rootMotion: true, launch: { distance: 10, height: 1.5, slow: 1.5, wallBounce: 1.5 }, hitBones: ['LeftFoot', 'RightFoot'] },
         monkey_turn: { name: 'monkey_turn', isSuper: true, startup: 17, recovery: 40, hitStun: 30, knockback: 2, rootMotion: true, launch: true },
         // wind_step：動畫前 60 幀 2 倍速（main.js speedAnims），鏡頭拉遠時才往前跳，第 30 幀落地開始打
         wind_step: { name: 'wind_step', isSuper: true, animStart: 'hold', sounds: [{ name: 'wind_step_title', frame: 1 }], advance: { from: 1, to: 30, distance: 3, height: 0.2, afterFreeze: true }, hits: [30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170], hitFrames: 2, hitStun: 60, blockStun: 30, knockback: 0, launch: { distance: 3 }, lock: { distance: 0.75 } },
@@ -637,6 +637,13 @@ export class Fighter {
     }
     const body = target.hurtboxParts.find(h => h.name === 'body') || target.hurtboxParts[0]
     return body ? body.box.getCenter(point) : point.set(target.x, 1, 0)
+  }
+
+  /** 頭部骨頭的世界座標（頭頂文字用）；找不到頭骨就用身高估算 */
+  getHeadPosition(target = new THREE.Vector3()) {
+    const head = this._getBone('Head')
+    if (head) return head.getWorldPosition(target)
+    return target.set(this.x, this.y + this.characterHeight * 0.92, 0)
   }
 
   /**

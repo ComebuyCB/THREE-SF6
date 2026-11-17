@@ -9,6 +9,8 @@ import { Stage } from './stage.js'
 import { Hud } from './hud.js'
 import { Sound } from './sound.js'
 import { HitEffect } from './hitEffect.js'
+import { HeadLabel } from './headLabel.js'
+import { addSmileMorph } from './faceMorph.js'
 import { FighterAI } from './ai.js'
 
 const MODEL_DIR = 'src/model'
@@ -29,9 +31,12 @@ class FighterViewer {
     const def = {
       el: '#stage',
       characters: [
+        { name: 'Meshy', url: `${MODEL_DIR}/characters/meshy.glb`, brightness: 1.35, smile: { corners: [[-0.034, 1.556], [0.034, 1.556]], radius: 0.014, lift: 0.007, outward: 0.003, back: 0.002, minZ: 0.05 } },
         { name: 'Bladman', url: `${MODEL_DIR}/characters/bladman.glb` },
         { name: 'Erika', url: `${MODEL_DIR}/characters/erika.glb` },
         { name: 'Remy', url: `${MODEL_DIR}/characters/remy.glb` },
+        // Meshy 匯出（Mixamo 骨架範本）；brightness：材質顏色倍率（貼圖偏暗）
+        // smile：程式推嘴角做出微笑（模型沒有表情，見 faceMorph.js），座標是模型原始網格座標（公尺）
       ],
       // 所有人物共用的動作（Mixamo 下載時選 Without Skin）；key 對應 Fighter 的狀態與招式（moves）
       anims: {
@@ -213,17 +218,13 @@ class FighterViewer {
       skyboxHeight: 2, // 全景圖拍攝時相機離地高度（公尺）：越小地面看起來越近、景物越大
       skyboxRadius: 40, // 半球半徑（公尺）：超出的部分是天空
       skyboxRotation: 16, // 場景水平轉動角度（度）：轉全景圖，讓想要的景物對著鏡頭
-      // shake_head 最後一擊打飛：飛多遠、撞到邊界牆是否反彈、反彈力度（剩下的飛行距離 × 倍率）
-      shakeHeadLaunch: 8,
-      shakeHeadBounce: true,
-      shakeHeadBounceForce: 1,
-      stageLight: 1, // 場地亮度（環境光、主光、背景一起乘上這個倍率）
+      showGround: true, // 影子地板
       timeScale: 1,
       paused: false,
       moveSpeed: 2,
       showCoords: true,
       // 介面顯示：GUI 勾選開關，key 對到 _setUiVisible 的區塊
-      ui: { frameMeter: true, keys: true, hint: true, combo: true },
+      ui: { frameMeter: true, keys: true, combo: true },
       showDebug: true,
       showSkeleton: false,
     }
@@ -305,7 +306,7 @@ class FighterViewer {
 
   /** 介面區塊顯示 / 隱藏（GUI「介面顯示」） */
   _setUiVisible(key, isVisible) {
-    const selectors = { frameMeter: '#frameMeter', keys: '.index_keys', hint: '.index_hint', combo: '#comboP1' }
+    const selectors = { frameMeter: '#frameMeter', keys: '.index_keys', combo: '#comboP1' }
     document.querySelector(selectors[key])?.classList.toggle('is_uiHide', !isVisible)
   }
 
@@ -343,7 +344,7 @@ class FighterViewer {
       showSkeleton: this.params.showSkeleton,
     })
     this.params[slot] = name
-    this._applyMoveTuning(this[slot])
+    if (slot === 'p1') this.headLabel.setTagTarget(this.p1)
     if (this.p1 && this.p2) {
       this.p1.opponent = this.p2
       this.p2.opponent = this.p1
@@ -357,15 +358,6 @@ class FighterViewer {
   _resetAI(slot) {
     this.ai[slot].reset()
     this.input[slot] = this._newInputState()
-  }
-
-  /** GUI 調整的招式數據寫進人物的招式表（每個 Fighter 有自己的一份，換人物後要重寫） */
-  _applyMoveTuning(fighter) {
-    const move = fighter?.moves.shake_head
-    if (!move) return
-    const { shakeHeadLaunch, shakeHeadBounce, shakeHeadBounceForce } = this.params
-    // launch 可能是 true（全照預設）：轉成物件再寫入，招式表其他打飛設定保留
-    move.launch = { ...(typeof move.launch === 'object' ? move.launch : {}), distance: shakeHeadLaunch, wallBounce: shakeHeadBounce ? shakeHeadBounceForce : 0 }
   }
 
   /** 切換背景：載入全景圖後投影成有地面的半球，載入過的會快取 */
@@ -400,18 +392,15 @@ class FighterViewer {
     this.skybox = new GroundedSkybox(texture, skyboxHeight, skyboxRadius, 128)
     // 半球的地面在 y = 0（官方範例：位置 = 高度 - 0.01，避免和陰影地板重疊閃爍）
     this.skybox.position.y = skyboxHeight - 0.01
+    // 半球外不放全景圖（scene.background 維持純色），鏡頭拉出半球外時看得到球的外形
     this.scene.add(this.skybox)
-    // 相機跑出半球外（例如滑鼠縮放很遠）時，背景仍是同一張圖
-    this.scene.background = texture
     this._applySkyboxRotation()
     this._applyStageLight()
   }
 
-  /** 場景水平轉動：半球與無限遠背景一起轉，接縫才對得上 */
+  /** 場景水平轉動：轉全景圖半球 */
   _applySkyboxRotation() {
-    const rad = THREE.MathUtils.degToRad(this.params.skyboxRotation)
-    if (this.skybox) this.skybox.rotation.y = rad
-    this.scene.backgroundRotation.y = rad
+    if (this.skybox) this.skybox.rotation.y = THREE.MathUtils.degToRad(this.params.skyboxRotation)
   }
 
   /** 絕招演出的場地霧：amount 0 = 沒有霧（推到很遠）、1 = fogNear ~ fogFar */
@@ -424,18 +413,16 @@ class FighterViewer {
   }
 
   /**
-   * 場地亮度 = GUI 的場地亮度 × 絕招演出的變暗；環境光、主光、背景（半球與天空）一起調整
+   * 場地亮度 = 絕招演出的變暗；環境光、主光、背景半球一起調整
    * 絕招聚光燈不受影響，演出時只有放絕招的人被照亮
    */
   _applyStageLight() {
     if (!this.stageLights) return
     const dim = 1 + (this.superCamera.dimLevel - 1) * this.superDim
-    const level = this.params.stageLight * dim
     const { hemi, dir, base } = this.stageLights
-    hemi.intensity = base.hemi * level
-    dir.intensity = base.dir * level
-    this.skybox?.material.color.setScalar(level)
-    this.scene.backgroundIntensity = level
+    hemi.intensity = base.hemi * dim
+    dir.intensity = base.dir * dim
+    this.skybox?.material.color.setScalar(dim)
   }
 
   // internal
@@ -491,8 +478,10 @@ class FighterViewer {
     this.superSpot = { light: spot, aim: new THREE.Vector3(0, 1.3, 0), peak: 60 }
     this.scene.add(spot, spot.target)
 
-    this.stage = new Stage({ scene: this.scene, halfWidth: this.stageHalfWidth, showRuler: this.params.showCoords })
+    this.stage = new Stage({ scene: this.scene, halfWidth: this.stageHalfWidth, showRuler: this.params.showCoords, showGround: this.params.showGround })
     this.hitEffect = new HitEffect({ scene: this.scene })
+    // 頭上文字：P1 頭上的 you（demo 用）、絕招發動時的絕招名
+    this.headLabel = new HeadLabel({ scene: this.scene, camera: this.camera })
     this.hud = new Hud({ camera: this.camera, canvas: this.renderer.domElement, showCoords: this.params.showCoords })
   }
 
@@ -524,6 +513,9 @@ class FighterViewer {
       ...keys.map(key => this.mixamo.loadAnimation(this.anims[key])),
     ])
 
+    if (config.brightness) this._brightenSource(character.scene, config.brightness)
+    if (config.smile) addSmileMorph(character.scene, config.smile)
+
     const clips = {}
     keys.forEach((key, i) => {
       let clip = this.mixamo.bindAnimation(character, anims[i], key)
@@ -539,6 +531,17 @@ class FighterViewer {
       })
     })
     return { scene: character.scene, clips }
+  }
+
+  /**
+   * 人物變亮：材質顏色（會乘上貼圖）乘上倍率，超過 1 = 比貼圖原色亮
+   * 在人物 clone 之前改，Fighter 會把這個顏色當成原色（受擊閃色後回到這個顏色）
+   */
+  _brightenSource(scene, rate) {
+    scene.traverse(obj => {
+      if (!obj.isMesh) return
+      ;[obj.material].flat().forEach(material => material.color?.multiplyScalar(rate))
+    })
   }
 
   /**
@@ -630,33 +633,25 @@ class FighterViewer {
     gui.add(this.params, 'p2Guard').name('P2 木樁防禦')
     gui.add(this.params, 'p1AI').name('P1 由 AI 操作').onChange(() => this._resetAI('p1'))
     gui.add(this.params, 'p2AI').name('P2 由 AI 操作').onChange(() => this._resetAI('p2'))
-    const tuneFolder = gui.addFolder('shake_head 擊飛')
-    const applyTuning = () => fighters().forEach(f => this._applyMoveTuning(f))
-    tuneFolder.add(this.params, 'shakeHeadLaunch', 0.5, 10, 0.1).name('擊飛距離（m）').onChange(applyTuning)
-    const bounceForce = tuneFolder.add(this.params, 'shakeHeadBounceForce', 0.05, 1.5, 0.05).name('反彈力度').onChange(applyTuning)
-    tuneFolder.add(this.params, 'shakeHeadBounce').name('反彈邊界牆').onChange(v => {
-      bounceForce.enable(v)
-      applyTuning()
+    gui.add(this.params, 'moveSpeed', 0.5, 5, 0.1).name('移動速度').onChange(v => {
+      fighters().forEach(f => { f.moveSpeed = v })
     })
-    bounceForce.enable(this.params.shakeHeadBounce)
+
     const bgFolder = gui.addFolder('背景')
     bgFolder.add(this.params, 'skybox', Object.keys(this.skyboxes)).name('場景').listen().onChange(v => this.setSkybox(v))
     bgFolder.add(this.params, 'skyboxHeight', 0.5, 10, 0.1).name('拍攝高度').onFinishChange(() => this._buildSkybox())
     bgFolder.add(this.params, 'skyboxRadius', 10, 200, 1).name('場景大小').onFinishChange(() => this._buildSkybox())
     bgFolder.add(this.params, 'skyboxRotation', -180, 180, 1).name('場景轉動（度）').onChange(() => this._applySkyboxRotation())
-    bgFolder.add(this.params, 'stageLight', 0, 2, 0.05).name('場地亮度').onChange(() => this._applyStageLight())
+    bgFolder.add(this.params, 'showGround').name('顯示影子地板').onChange(v => this.stage.setGroundVisible(v))
     bgFolder.add(this.superCamera, 'dimLevel', 0, 1, 0.05).name('絕招時變暗到')
 
     const playFolder = gui.addFolder('播放設定')
     playFolder.add(this.params, 'timeScale', 0, 2, 0.05).name('遊戲速度')
     this.pauseController = playFolder.add(this.params, 'paused').name('暫停（P）')
-    playFolder.add(this.params, 'moveSpeed', 0.5, 5, 0.1).name('移動速度').onChange(v => {
-      fighters().forEach(f => { f.moveSpeed = v })
-    })
 
     // 介面顯示：取消勾選就隱藏該區塊
     const uiFolder = gui.addFolder('介面顯示')
-    const uiNames = { frameMeter: '幀數表', keys: '按鍵示意（左下）', hint: '操作說明（中下）', combo: '連段數' }
+    const uiNames = { frameMeter: '幀數表', keys: '按鍵與操作說明（左下）', combo: '連段數' }
     Object.entries(uiNames).forEach(([key, name]) => {
       uiFolder.add(this.params.ui, key).name(name).onChange(v => this._setUiVisible(key, v))
     })
@@ -1149,6 +1144,7 @@ class FighterViewer {
 
     this.cinematic = { fighter, time: 0, frozenSteps: 0, animStart: this._getSuperAnimStart(fighter.moves[key]), fromTarget, fromOffset, zoomPos, zoomTarget }
     this.controls.enabled = false
+    this.headLabel.showTitle(fighter, fighter.moves[key].name)
   }
 
   /**
@@ -1222,6 +1218,7 @@ class FighterViewer {
       this.cinematic = null
     }
     if (this.superSpot) this.superSpot.light.intensity = 0
+    this.headLabel.clearTitle()
     this.superDim = 0
     this._applyStageLight()
     this._applySuperFog(0)
@@ -1383,6 +1380,7 @@ class FighterViewer {
     this._applySuperFog(backT > 0 ? Math.max(0, 1 - backT / zoomOut) : 1)
 
     if (t >= zoomIn + hold + zoomOut) {
+      this.headLabel.hideTitle()
       spot.intensity = 0
       this.superDim = 0
       this._applyStageLight()
@@ -1530,6 +1528,8 @@ class FighterViewer {
       if (this.hitCam) this._updateHitCamera(realDelta)
       else if (!this.cinematic) this._followCamera(realDelta)
       this.hud.updateCoords(fighters)
+      // 鏡頭與人物姿勢都更新完才放文字（絕招名的位置看鏡頭方向）
+      this.headLabel.update(realDelta)
     }
 
     // 演出中由 _updateCinematic 控制鏡頭、命中鏡頭中由 _updateHitCamera 控制

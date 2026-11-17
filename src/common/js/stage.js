@@ -14,6 +14,7 @@ export class Stage {
       rulerZ: 0.55, // 刻度尺放在人物前方（靠鏡頭）一點，才不會被腳擋住
       pixelsPerMeter: 128,
       showRuler: true,
+      showGround: true, // 影子地板
     }
 
     // 1. merge options
@@ -30,6 +31,7 @@ export class Stage {
 
     // 4. setup runtime state
     this.ruler = null
+    this.ground = null
     this.walls = []
 
     // 5. init
@@ -41,6 +43,7 @@ export class Stage {
     this._setupWalls()
     this._setupRuler()
     this.setRulerVisible(this.showRuler)
+    this.setGroundVisible(this.showGround)
   }
 
   // public
@@ -48,6 +51,12 @@ export class Stage {
   setRulerVisible(isVisible) {
     this.showRuler = isVisible
     this.ruler.visible = isVisible
+  }
+
+  /** 影子地板顯示 / 隱藏（隱藏 = 地上沒有人物影子） */
+  setGroundVisible(isVisible) {
+    this.showGround = isVisible
+    this.ground.visible = isVisible
   }
 
   // internal
@@ -58,6 +67,7 @@ export class Stage {
     ground.rotation.x = -Math.PI / 2
     ground.receiveShadow = true
     this.scene.add(ground)
+    this.ground = ground
   }
 
   /** 左右邊界：半透明的牆 + 地上的紅線 */
