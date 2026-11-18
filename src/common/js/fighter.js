@@ -115,11 +115,14 @@ export class Fighter {
        *   這段沒碰到對手（打中或被防禦）的話，第 to + missEnd 幀後直接結束招式
        * length：招式只用到第幾幀（動畫後面不播）
        * firstPassDelay：repeatOnHit 第一次動畫多播前面幾幀（招式數據照第二次起的幀數，第一次自動往後挪）
+       * aimOpponent：自由模式（freeMode.js）放招時朝向對手，而不是自己目前面向的方向
        * repeatOnHit：{ at, times } 打中時，第 at 幀後轉身、從頭再出一次同招，最多出 times 次（最後一次才 launch）
        *   沒打中那次就照 length 結束
        * advance：{ from, to, distance, height } 招式第 from ~ to 幀（幀數表編號，1 起算）平均往前移動 distance 公尺
        *   height：同時往上跳成拋物線，最高 height 公尺，第 to 幀剛好落地（不算空中狀態，被打斷時直接回到地面）
        *   afterFreeze：絕招演出凍結期間（拉近 + 停留）不移動，從鏡頭拉遠（遊戲恢復）的第一幀起到第 to 幀走完 distance
+       *   toOpponent：不看 distance，開始移動的那一幀量到對手的距離，一路衝到對手面前（停在 lock.distance，沒有就推擠框貼齊），不限距離
+       * invincibleFrames：這招前幾幀無敵（取代 superInvincibleFrames，而且不會因為攻擊判定開始而提早結束）
        * rootMotion：攻擊判定期間套用動畫本身的前後位移
        * launch：最後一段命中時把對手打飛（飛走 → 起身）；true = 全照飛走動畫，或填物件 { distance, height, slow, reverse, wallBounce }：
        *   distance：飛多遠（公尺）；沒填 = 照飛走動畫本身的位移
@@ -164,8 +167,8 @@ export class Fighter {
         kick_ball: { name: '浪子踢球', isSuper: true, length: 280, sounds: [{ name: 'kick_ball_title', frame: 1 }], grab: { from: 44, to: 49, range: 1, distance: 0.6, stunFrame: 10 }, hits: [171], hitFrames: 11, hitStun: 30, knockback: 2, rootMotion: true, launch: { distance: 10, height: 1.5, slow: 1.5, wallBounce: 1.5 }, hitBones: ['LeftFoot', 'RightFoot'] },
         monkey_turn: { name: '猴子繞花線', isSuper: true, startup: 17, recovery: 40, hitStun: 30, knockback: 2, rootMotion: true, launch: true },
         // wind_step：動畫前 60 幀 2 倍速（main.js speedAnims），鏡頭拉遠時才往前跳，第 30 幀落地開始打
-        wind_step: { name: '風擺柳碎布', isSuper: true, animStart: 'hold', sounds: [{ name: 'wind_step_title', frame: 1 }], advance: { from: 1, to: 30, distance: 3, height: 0.2, afterFreeze: true }, hits: [30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170], hitFrames: 2, hitStun: 60, blockStun: 30, knockback: 0, launch: { distance: 3 }, lock: { distance: 0.75 } },
-        dog_bear: { name: '狗熊哆嗦毛', isSuper: true, cutSounds: true, cameraShake: [0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.08], length: 415, animStart: 'zoomOut', sounds: [{ name: 'dog_bear_title', frame: 1 }, { name: 'dog_bear', frame: 5, delay: 0.35 }], advance: { from: 1, to: 10, distance: 2 }, hits: [15, 65, 108, 151, 196, 238, 284, 325], hitFrames: 10, hitStun: 60, blockStun: 30, knockback: 0, rootMotion: true, launch: { distance: 3, height: 3, slow: 1.5 }, lock: { distance: 0.75 } },
+        wind_step: { name: '風擺柳碎布', isSuper: true, aimOpponent: true, animStart: 'hold', sounds: [{ name: 'wind_step_title', frame: 1 }], advance: { from: 1, to: 30, toOpponent: true, height: 0.2, afterFreeze: true }, hits: [30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170], hitFrames: 2, hitStun: 60, blockStun: 30, knockback: 0, launch: { distance: 3 }, lock: { distance: 0.75 } },
+        dog_bear: { name: '狗熊哆嗦毛', isSuper: true, invincibleFrames: 15, cutSounds: true, cameraShake: [0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.08], length: 415, animStart: 'zoomOut', sounds: [{ name: 'dog_bear_title', frame: 1 }, { name: 'dog_bear', frame: 5, delay: 0.35 }], advance: { from: 1, to: 10, distance: 2 }, hits: [15, 65, 108, 151, 196, 238, 284, 325], hitFrames: 10, hitStun: 60, blockStun: 30, knockback: 0, rootMotion: true, launch: { distance: 3, height: 3, slow: 1.5 }, lock: { distance: 0.75 } },
         shake_head: { name: '搖頭晃腦', isSuper: true, cutSounds: true, cameraShake: [0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.05, 0.5], hitCamera: { angle: 60, height: 0.2, lookAhead: { x: 0.3, y: -0.3 } }, animStart: 'zoomOut', hitBones: ['RightHand'], sounds: [{ name: 'shake_head_title', frame: 1 }, { name: 'shake_head', frame: 2, delay: 0.35 }], faceCamera: true, advance: { from: 2, to: 418, distance: 1.5 }, hits: [8, 50, 96, 146, 186, 226, 276, 320, [378, 408]], hitFrames: 10, hitStun: 80, blockStun: 50, knockback: 0, launch: { distance: 8, wallBounce: 1 }, lock: { distance: 0.75, juggle: { fromHit: 8, maxFrame: 20, maxHeight: 1, minFrame: 60, minHeight: 0.6, animHold: 60, animRestart: 2 } } },
         dodge_step: { name: '閃身步', isSuper: true, sounds: [{ name: 'dodge_step_title', frame: 1 }], faceCamera: true, length: 40, firstPassDelay: 48, repeatOnHit: { at: 30, times: 4 }, dashThrough: { from: 5, to: 14, gap: 0.8, lastDistance: 4 }, hits: [[5, 14]], hitStun: 45, knockback: 0, launch: { distance: 4, reverse: true }, hitBones: ['LeftHand', 'RightHand', 'Spine2'], noRearHand: true, },
       },
@@ -256,10 +259,14 @@ export class Fighter {
     this.juggleHits = 0 // 浮空後挨了幾下（main.js 看到變了就重算高度曲線）
     this.isHopping = false // advance.height 的跳躍中
     this.advanceStart = null // advance.afterFreeze 實際開始移動的幀
+    this.advanceDistance = null // advance.toOpponent：開始移動時量到的距離
     this.isFrozenStep = false // main.js 絕招凍結期間推進這一幀
     this.guardStartFrame = 0 // 原地防禦：防禦動作從第幾幀播
     this.leftBlock = false // 這一幀剛結束防禦硬直（原地防禦直接接舉手姿勢）
     this.opponent = null // 對手 Fighter（main.js 設定）：從自由狀態出招前先轉向他
+    this.isFreeFacing = false // 自由模式：不自動轉向對手（面向由 freeMode.js 決定）
+    this.dashStyle = null // 自由模式的衝刺：{ anim（動作 key）, speedRate（位移倍率）}；衝刺取消不套用
+    this.jumpSpeedRate = 1 // 斜跳水平速度倍率（自由模式 2 倍；高度不變）
     this.flyDir = 0 // 打飛時往哪邊飛（+1 / -1）
     this.flyBounce = 0 // 這次打飛的反彈力度（招式的 launch.wallBounce），0 = 不反彈
     this.isFlyBounced = false // 這次飛走已經撞牆反彈過（只彈一次）
@@ -300,6 +307,7 @@ export class Fighter {
     this.pushBox = new THREE.Box3()
     this.debugGroup = new THREE.Group()
     this.skeletonHelper = null
+    this.xrayMeshes = null // 透視剪影（被場景擋住時顯示）：第一次打開時建立，見 setXray
 
     // 5. init
     this.init()
@@ -362,6 +370,7 @@ export class Fighter {
   get isInvincible() {
     if (this.state === 'down') return !this.isLaunched
     const move = this.getCurrentMove()
+    if (move?.invincibleFrames) return this.stateFrame + 1 <= move.invincibleFrames // 招式自己設定的無敵：照幀數算滿
     if (!move?.isSuper) return false
     const firstActive = move.hits ? hitRange(move.hits[0], move.hitFrames)[0] : move.startup + 1
     return this.stateFrame + 1 <= this.superInvincibleFrames && this.moveFrame < firstActive
@@ -431,8 +440,8 @@ export class Fighter {
     } else if (this.canAct) {
       // 動作剛結束（這一幀才回到自由狀態）就接下一個動作時，main.js 的 faceTo 還沒跑到：先轉向對手
       this.faceTo(this.opponent)
-      // 5. 走路中按衝刺取消鍵 = 前前 / 後後
-      const walkDash = input.rush && input.move !== 0 ? input.move : 0
+      // 5. 自由狀態按衝刺取消鍵 = 衝刺：按著方向往那邊（前前 / 後後），沒按方向往前
+      const walkDash = input.rush ? input.move || this.facingSign : 0
       if (input.attack && this.actions[input.attack]) {
         this.startMove(input.attack)
         this.isStateHeld = false
@@ -566,7 +575,7 @@ export class Fighter {
    * @returns {boolean} 是否有轉身（有的話要重算判定框）
    */
   faceTo(target, force = false) {
-    if (!target || (!force && !this.canAct)) return false
+    if (!target || this.isFreeFacing || (!force && !this.canAct)) return false
     const faceRight = target.bodyCenterX >= this.bodyCenterX
     if (faceRight === this.faceRight) return false
     this.faceRight = faceRight
@@ -601,8 +610,10 @@ export class Fighter {
     })
     this._updateLimbHit(move?.hitLimb, isHitActive)
 
-    this.pushBox.min.set(this.x - this.pushHalfWidth, 0, -0.3)
-    this.pushBox.max.set(this.x + this.pushHalfWidth, 0.02, 0.3)
+    // 前後跟著人物的 z（格鬥模式 z = 0；自由模式人物會前後走動）
+    const z = this.model.position.z
+    this.pushBox.min.set(this.x - this.pushHalfWidth, 0, z - 0.3)
+    this.pushBox.max.set(this.x + this.pushHalfWidth, 0.02, z + 0.3)
   }
 
   /** 攻擊判定只在 active 幀、且目前這一段尚未命中時有效 */
@@ -791,6 +802,42 @@ export class Fighter {
     this.mixer.stopAllAction()
     this.scene.remove(this.model, this.debugGroup)
     this.materials.forEach(({ material }) => material.dispose())
+    this.xrayMeshes?.[0]?.material.dispose()
+  }
+
+  /**
+   * 透視剪影：被場景物體擋住的部分，在物體表面畫出淡藍色的發光剪影（鏡頭跟隨的人用）
+   * 剪影是共用同一副骨架的複製網格，深度測試用 GreaterDepth：只畫在「前面已經有東西」的地方
+   * 畫的順序：場景（renderOrder 0）→ 剪影（1，不寫深度）→ 人物（2），所以人物自己手腳互相擋住的地方不會出現剪影，
+   * 另一個人物擋住時也不會（還沒畫到）
+   */
+  setXray(isOn) {
+    if (!this.model || (!isOn && !this.xrayMeshes)) return
+    if (!this.xrayMeshes) {
+      const material = new THREE.MeshBasicMaterial({
+        color: 0x3a6f99,
+        blending: THREE.AdditiveBlending, // 不透明那一輪也能疊色（NormalBlending 要 transparent 才有效）
+        depthFunc: THREE.GreaterDepth,
+        depthWrite: false,
+        fog: false,
+      })
+      this.xrayMeshes = []
+      this.model.traverse(obj => {
+        if (!obj.isSkinnedMesh || obj.userData.isXray) return
+        const xray = new THREE.SkinnedMesh(obj.geometry, material)
+        xray.bind(obj.skeleton, obj.bindMatrix)
+        xray.userData.isXray = true
+        xray.renderOrder = 1
+        xray.frustumCulled = false
+        this.xrayMeshes.push({ parent: obj, mesh: xray })
+      })
+      // 掛在原本網格底下（位置、縮放、鏡像都跟著）；traverse 結束後才加，避免走訪到新加的
+      this.xrayMeshes = this.xrayMeshes.map(({ parent, mesh }) => {
+        parent.add(mesh)
+        return mesh
+      })
+    }
+    this.xrayMeshes.forEach(mesh => { mesh.visible = isOn })
   }
 
   // internal
@@ -813,6 +860,7 @@ export class Fighter {
       if (!obj.isMesh) return
       obj.castShadow = true
       obj.receiveShadow = true
+      obj.renderOrder = 2 // 在場景（0）與透視剪影（1）之後畫，見 setXray
       // 材質也要 clone，受擊閃光才不會影響到同一個人物檔的另一個人物
       const list = Array.isArray(obj.material) ? obj.material : [obj.material]
       const cloned = list.map(material => {
@@ -1039,8 +1087,9 @@ export class Fighter {
   _dashStep() {
     const { frames, forwardDistance, backDistance } = this.dash
     const distance = this.dashDir === this.facingSign ? forwardDistance : backDistance
-    // 衝刺取消：不能出招的前 lockFrames 幀用 lockSpeedRate 倍速前進
-    const rate = this.isRush && this.stateFrame < this.rush.lockFrames ? this.rush.lockSpeedRate : 1
+    // 衝刺取消：不能出招的前 lockFrames 幀用 lockSpeedRate 倍速前進；自由模式的一般衝刺用 dashStyle.speedRate
+    let rate = this.isRush && this.stateFrame < this.rush.lockFrames ? this.rush.lockSpeedRate : 1
+    if (!this.isRush && this.state === 'dash' && this.dashStyle) rate *= this.dashStyle.speedRate
     this.x += this.dashDir * (distance / frames) * rate
   }
 
@@ -1076,7 +1125,7 @@ export class Fighter {
     this.airFrame = 0
     this.isJumpArc = true
     this.vy = this._getJumpPhysics().speed
-    this.vx = dir * (dir === this.facingSign ? forwardSpeed : backSpeed)
+    this.vx = dir * (dir === this.facingSign ? forwardSpeed : backSpeed) * this.jumpSpeedRate
     this._setState('air')
   }
 
@@ -1247,7 +1296,15 @@ export class Fighter {
     }
     if (frame < start || frame > to) return
     this.advanceFrame = this.stateFrame
-    this.x += this.facingSign * (distance / (to - start + 1))
+    // toOpponent：第一次移動時量到對手的水平距離（自由模式是平面距離），扣掉要停下的間距
+    if (move.advance.toOpponent && this.advanceDistance == null) {
+      const opp = this.opponent
+      const gap = move.lock?.distance ?? this.pushHalfWidth + (opp?.pushHalfWidth ?? 0)
+      const d = opp ? Math.hypot(opp.model.position.x - this.model.position.x, opp.model.position.z - this.model.position.z) : 0
+      this.advanceDistance = Math.max(0, d - gap)
+    }
+    const total = move.advance.toOpponent ? this.advanceDistance : distance
+    this.x += this.facingSign * (total / (to - start + 1))
     if (height) {
       // 拋物線：第 start 幀起跳、第 to 幀落地（y = 0）
       const t = (frame - start + 1) / (to - start + 1)
@@ -1291,6 +1348,7 @@ export class Fighter {
       this.hitWindow = -1
       this.advanceFrame = -1
       this.advanceStart = null // advance.afterFreeze 實際開始移動的幀
+      this.advanceDistance = null // advance.toOpponent：開始移動時量到的距離
       this.passCount = 1 // repeatOnHit：第幾次（再出一次時由 _checkPassFlow 加 1）
       this.stateLength = this._getMoveLength()
       actionKey = this.currentMove
@@ -1305,7 +1363,9 @@ export class Fighter {
       actionKey = 'block' // 原地防禦：防禦動作停在舉手姿勢（見 _syncGuardAnimation）
     } else if (state === 'dash') {
       this.stateLength = this.dash.frames
-      actionKey = 'dash'
+      // 自由模式的衝刺（含衝刺取消）換成 dashStyle 的動作；衝刺取消停頓中已經先播了同一個動作（keepRushAnim），接著播
+      const style = this.dashStyle
+      actionKey = style && this.actions[style.anim] ? style.anim : 'dash'
     } else if (state === 'airDash') {
       this.stateLength = this.dash.frames
       actionKey = 'dash'
@@ -1375,7 +1435,7 @@ export class Fighter {
     if (!this.interp) {
       const bones = []
       this.model.traverse(obj => obj.isBone && bones.push(obj))
-      const size = bones.length * 7 + 2
+      const size = bones.length * 7 + 3
       this.interp = { bones, prev: new Float32Array(size), curr: new Float32Array(size), hasPrev: false }
     }
 
@@ -1388,6 +1448,7 @@ export class Fighter {
     const o = it.bones.length * 7
     it.curr[o] = this.model.position.x
     it.curr[o + 1] = this.model.position.y
+    it.curr[o + 2] = this.model.position.z
 
     if (!it.hasPrev) {
       it.prev.set(it.curr)
@@ -1411,6 +1472,7 @@ export class Fighter {
     const o = bones.length * 7
     this.model.position.x = lerp(o)
     this.model.position.y = lerp(o + 1)
+    this.model.position.z = lerp(o + 2)
   }
 
   restoreFrame() {
@@ -1551,9 +1613,20 @@ export class Fighter {
     this._setState('idle')
     this.mixer.update(0)
     if (this.model) this.model.position.z = 0
+    this._applyFacing() // 自由模式轉過的方向也轉回左右
     // 畫面補間：前後兩幀都設成現在的姿勢，避免補間到重置前的姿勢
     this.captureFrame()
     this.captureFrame()
+  }
+
+  /** 依目前的面向（faceRight）與招式的 yaw / mirror / faceCamera 重新轉向（自由模式改了 faceRight 後呼叫） */
+  refreshFacing() {
+    this._applyFacing()
+  }
+
+  /** 自由模式：直接循環播放某個動作（不經過狀態機，播放中的同一個動作不會重來） */
+  playLoop(key) {
+    this._play(key, false, false)
   }
 
   /** dashThrough 穿越中（main.js 這段期間不推擠） */
@@ -1620,13 +1693,17 @@ export class Fighter {
     return this.state === 'dash' && this.isRush && this.stateFrame >= this.rush.lockFrames
   }
 
-  /** 衝刺取消停頓中先播衝刺動畫；人不移動，由 main.js 在停頓期間推進動畫時間 */
+  /**
+   * 衝刺取消停頓中先播衝刺動畫；人不移動，由 Combat 在停頓期間推進動畫時間
+   * 自由模式（dashStyle）改播 dashStyle 的動作（FastRun），位移速度不變
+   */
   startRushAnim() {
-    const next = this.actions.dash // 衝刺取消一律往前
+    const styleAction = this.dashStyle && this.actions[this.dashStyle.anim]
+    const next = styleAction || this.actions.dash // 衝刺取消一律往前
     if (!next) return
     const prev = this.currentAction
     next.reset()
-    next.setEffectiveTimeScale(this.dash.animSpeed)
+    next.setEffectiveTimeScale(styleAction ? 1 : this.dash.animSpeed)
     next.setEffectiveWeight(1)
     next.setLoop(THREE.LoopRepeat, Infinity)
     next.play()

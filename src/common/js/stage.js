@@ -14,6 +14,7 @@ export class Stage {
       rulerZ: 0.55, // 刻度尺放在人物前方（靠鏡頭）一點，才不會被腳擋住
       pixelsPerMeter: 128,
       showRuler: true,
+      showWalls: true, // 左右邊界牆 + 地上紅線
       showGround: true, // 影子地板
     }
 
@@ -43,6 +44,7 @@ export class Stage {
     this._setupWalls()
     this._setupRuler()
     this.setRulerVisible(this.showRuler)
+    this.setWallsVisible(this.showWalls)
     this.setGroundVisible(this.showGround)
   }
 
@@ -51,6 +53,12 @@ export class Stage {
   setRulerVisible(isVisible) {
     this.showRuler = isVisible
     this.ruler.visible = isVisible
+  }
+
+  /** 左右邊界牆與地上紅線顯示 / 隱藏（只影響畫面，邊界照常） */
+  setWallsVisible(isVisible) {
+    this.showWalls = isVisible
+    this.bounds.visible = isVisible
   }
 
   /** 改場地寬度：邊界牆、紅線、刻度尺重建 */
@@ -67,6 +75,7 @@ export class Stage {
     this._setupWalls()
     this._setupRuler()
     this.setRulerVisible(this.showRuler)
+    this.setWallsVisible(this.showWalls)
   }
 
   /** 影子地板顯示 / 隱藏（隱藏 = 地上沒有人物影子） */

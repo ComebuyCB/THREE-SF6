@@ -11,7 +11,8 @@
     {
       "imports": {
         "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+        "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.8.3/build/index.module.js"
       }
     }
   </script>
@@ -66,38 +67,69 @@
     <span class="_text">HITS</span>
   </div>
 
-  <!-- P1 按鍵示意 + 操作說明：data-key = e.code，按下時亮起（main.js _updateKeycaps） -->
-  <aside class="index_keys" aria-label="按鍵與操作說明">
-    <div class="index_keys-board">
-      <div class="index_keys-group">
-        <div class="index_keys-move">
-          <kbd class="index_key is_w" data-key="KeyW"><b>W</b><small>跳</small></kbd>
-          <kbd class="index_key is_a" data-key="KeyA"><b>A</b><small>左</small></kbd>
-          <kbd class="index_key is_s" data-key="KeyS"><b>S</b><small>下</small></kbd>
-          <kbd class="index_key is_d" data-key="KeyD"><b>D</b><small>右</small></kbd>
-          <kbd class="index_key is_space" data-key="Space"><b>Space</b><small>跳</small></kbd>
+  <!-- 操作說明：左下 (?) 按鈕開關小視窗（main.js _toggleHelp）；不受「顯示幀數表」影響 -->
+  <aside class="index_help" aria-label="操作說明">
+    <button id="helpToggle" class="index_help-toggle" type="button" aria-expanded="false" aria-controls="helpPanel" aria-label="操作說明">?</button>
+    <section id="helpPanel" class="index_help-panel" aria-labelledby="helpTitle" hidden>
+      <header class="index_help-head">
+        <h2 id="helpTitle" class="_title">操作說明</h2>
+        <button id="helpClose" class="index_help-close" type="button" aria-label="關閉操作說明">×</button>
+      </header>
+
+      <!-- P1 按鍵示意：data-key = e.code，按下時亮起（main.js _updateKeycaps） -->
+      <div class="index_keys">
+        <div class="index_keys-board">
+          <div class="index_keys-move">
+            <kbd class="index_key is_w" data-key="KeyW"><b>W</b><small>跳</small></kbd>
+            <kbd class="index_key is_a" data-key="KeyA"><b>A</b><small>左</small></kbd>
+            <kbd class="index_key is_s" data-key="KeyS"><b>S</b><small>下</small></kbd>
+            <kbd class="index_key is_d" data-key="KeyD"><b>D</b><small>右</small></kbd>
+            <kbd class="index_key is_space" data-key="Space"><b>Space</b><small>跳</small></kbd>
+          </div>
+          <div class="index_keys-pad">
+            <kbd class="index_key is_light" data-key="Numpad7"><b>7</b><small>輕</small></kbd>
+            <kbd class="index_key is_medium" data-key="Numpad8"><b>8</b><small>中</small></kbd>
+            <kbd class="index_key is_heavy" data-key="Numpad9"><b>9</b><small>重</small></kbd>
+            <kbd class="index_key is_super" data-key="Numpad4"><b>4</b><small>dodge_step</small></kbd>
+            <kbd class="index_key is_super" data-key="Numpad5"><b>5</b><small>kick_ball</small></kbd>
+            <kbd class="index_key is_super" data-key="Numpad6"><b>6</b><small>wind_step</small></kbd>
+            <kbd class="index_key is_super" data-key="Numpad1"><b>1</b><small>dog_bear</small></kbd>
+            <kbd class="index_key is_super" data-key="Numpad2"><b>2</b><small>shake_head</small></kbd>
+            <!-- 3 鍵的招式由 GUI「招式選取」決定，名稱由 main.js _updateSuperKeyLabel 寫入 -->
+            <kbd class="index_key is_super" data-key="Numpad3"><b>3</b><small id="superKeyName"></small></kbd>
+            <kbd class="index_key is_rush is_wide" data-key="Numpad0"><b>0</b><small>衝刺取消</small></kbd>
+          </div>
         </div>
       </div>
-      <div class="index_keys-group">
-        <div class="index_keys-pad">
-          <kbd class="index_key is_light" data-key="Numpad7"><b>7</b><small>輕</small></kbd>
-          <kbd class="index_key is_medium" data-key="Numpad8"><b>8</b><small>中</small></kbd>
-          <kbd class="index_key is_heavy" data-key="Numpad9"><b>9</b><small>重</small></kbd>
-          <kbd class="index_key is_super" data-key="Numpad4"><b>4</b><small>dodge_step</small></kbd>
-          <kbd class="index_key is_super" data-key="Numpad5"><b>5</b><small>kick_ball</small></kbd>
-          <kbd class="index_key is_super" data-key="Numpad6"><b>6</b><small>wind_step</small></kbd>
-          <kbd class="index_key is_super" data-key="Numpad1"><b>1</b><small>dog_bear</small></kbd>
-          <kbd class="index_key is_super" data-key="Numpad2"><b>2</b><small>shake_head</small></kbd>
-          <!-- 3 鍵的招式由 GUI「招式選取」決定，名稱由 main.js _updateSuperKeyLabel 寫入 -->
-          <kbd class="index_key is_super" data-key="Numpad3"><b>3</b><small id="superKeyName"></small></kbd>
-          <kbd class="index_key is_rush is_wide" data-key="Numpad0"><b>0</b><small>衝刺取消</small></kbd>
-        </div>
-      </div>
-    </div>
-    <ul class="index_keys-info">
-      <li class="_item">防禦 : 後走　原地防禦 : 後走+S　衝刺 : AA | DD</li>
-      <li class="_item">P2 出招 : Shift+招式　縮放鏡頭 : 滑鼠滾輪</li>
-    </ul>
+
+      <section class="index_help-group" aria-labelledby="helpFight">
+        <h3 id="helpFight" class="_title">格鬥操作</h3>
+        <dl class="index_help-list">
+          <dt>防禦</dt><dd>往後走；後走 + S 原地防禦</dd>
+          <dt>衝刺</dt><dd>AA / DD；0 鍵（站著 = 往前）</dd>
+          <dt>衝刺取消</dt><dd>拳打中後按 0</dd>
+          <dt>P2 出招</dt><dd>Shift + 招式鍵</dd>
+          <dt>Esc</dt><dd>取消出拳 / 招式</dd>
+          <dt>自由模式</dt><dd>WASD 跑、空白鍵跳；連按方向鍵衝刺；與對手反方向即防禦</dd>
+        </dl>
+      </section>
+
+      <section class="index_help-group" aria-labelledby="helpDebug">
+        <h3 id="helpDebug" class="_title">除錯操作</h3>
+        <dl class="index_help-list">
+          <dt>0（主鍵盤）</dt><dd>暫停</dd>
+          <dt>- / =</dt><dd>遊戲速度</dd>
+          <dt>1 / 2 / 3</dt><dd>P1 / P2 / 全部 AI 開關</dd>
+          <dt>P</dt><dd>除錯顯示（座標、判定框、邊界牆）</dd>
+          <dt>O</dt><dd>幀數表</dd>
+          <dt>X</dt><dd>被擋住時透視角色</dd>
+          <dt>B</dt><dd>鏡頭避開物體</dd>
+          <dt>H</dt><dd>環繞鏡頭</dd>
+          <dt>M</dt><dd>自由模式；C 切換跟隨、V 鎖定對手</dd>
+          <dt>滑鼠</dt><dd>左鍵轉動、滾輪縮放鏡頭</dd>
+        </dl>
+      </section>
+    </section>
   </aside>
 
   <script type="module" src="src/common/js/main.js"></script>
