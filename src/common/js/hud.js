@@ -4,6 +4,7 @@ import * as THREE from 'three'
  * Hud：疊在畫面上的 HTML 資訊
  * - 人物腳底的即時座標（x、y = 腳底離地高度，跳起來時會變），可從 GUI 開關
  * - 連段數：P1、P2 各自計數，P1 在畫面左側、P2 在畫面右側
+ * - 血量（含虛血）、動力槽（DG）在上方，絕招量條（SG）在下方；數值來自 Combat.gauges（gauge.js）
  */
 export class Hud {
   constructor(options) {
@@ -12,6 +13,8 @@ export class Hud {
       canvas: null, // renderer.domElement，用來換算螢幕座標
       coords: ['#coordP1', '#coordP2'],
       combo: { p1: '#comboP1', p2: '#comboP2' },
+      status: { p1: '#statusP1', p2: '#statusP2' }, // 血量 + 動力槽
+      superGauge: { p1: '#superP1', p2: '#superP2' }, // 絕招量條
       showCoords: true,
       comboMin: 2, // 幾下以上才顯示
       comboHideDelay: 1.2, // 連段結束後幾秒淡出（秒）
@@ -36,6 +39,22 @@ export class Hud {
     this.combos = Object.fromEntries(Object.entries(this.combo).map(([slot, selector]) => {
       const el = document.querySelector(selector)
       return [slot, { el, numEl: el.querySelector('._num'), count: 0, hideTimer: 0 }]
+    }))
+    // 量條：每個玩家一組元素
+    this.gauges = Object.fromEntries(Object.keys(this.status).map(slot => {
+      const status = document.querySelector(this.status[slot])
+      const superGauge = document.querySelector(this.superGauge[slot])
+      const hp = status.querySelector('.js-gauge-hp')
+      const dg = status.querySelector('.js-gauge-dg')
+      const sg = superGauge.querySelector('.js-gauge-sg')
+      return [slot, {
+        hp,
+        dg,
+        sg,
+        dgCells: [...dg.children],
+        sgCells: [...sg.children],
+        sgNum: superGauge.querySelector('.js-gauge-sg-num'),
+      }]
     }))
     this.projected = new THREE.Vector3()
 
@@ -94,11 +113,53 @@ export class Hud {
     combo.el.classList.add('is_pop')
   }
 
+  /**
+   * 每次畫面更新：血量、虛血、DG、SG 寫進畫面
+   * @param {{ p1: Gauge, p2: Gauge }} gauges
+   */
+  updateGauges(gauges) {
+    Object.entries(this.gauges).forEach(([slot, els]) => {
+      const g = gauges[slot]
+      if (!g) return
+      els.hp.style.setProperty('--hp', g.hp / g.maxHp)
+      els.hp.style.setProperty('--wl', Math.min(g.wl, g.hp) / g.maxHp) // 虛血最多畫到剩下的血量
+      this._setCells(els.dgCells, g.dg, g.barSize)
+      this._setCells(els.sgCells, g.sg, g.barSize)
+      this._setText(els.sgNum, Math.floor(g.sg / g.barSize))
+      this._setAttr(els.hp, 'aria-valuemax', g.maxHp)
+      this._setAttr(els.dg, 'aria-valuemax', g.maxPoints)
+      this._setAttr(els.sg, 'aria-valuemax', g.maxPoints)
+      this._setAttr(els.hp, 'aria-valuenow', Math.round(g.hp))
+      this._setAttr(els.dg, 'aria-valuenow', Math.round(g.dg))
+      this._setAttr(els.sg, 'aria-valuenow', Math.round(g.sg))
+    })
+  }
+
   update(delta) {
     Object.values(this.combos).forEach(combo => {
       if (combo.hideTimer <= 0) return
       combo.hideTimer -= delta
       if (combo.hideTimer <= 0) combo.el.classList.remove('is_show')
     })
+  }
+
+  // internal
+
+  /** 分格量條：每格 barSize 點，寫入每格的填滿比例（--fill），滿格加 is_full */
+  _setCells(cells, value, barSize) {
+    cells.forEach((cell, i) => {
+      const fill = Math.min(1, Math.max(0, value / barSize - i))
+      cell.style.setProperty('--fill', fill)
+      cell.classList.toggle('is_full', fill >= 1)
+    })
+  }
+
+  /** 數值有變才寫入，避免每個畫面都改 DOM */
+  _setText(el, value) {
+    if (el.textContent !== String(value)) el.textContent = value
+  }
+
+  _setAttr(el, name, value) {
+    if (el.getAttribute(name) !== String(value)) el.setAttribute(name, value)
   }
 }

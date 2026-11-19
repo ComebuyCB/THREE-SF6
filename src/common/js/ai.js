@@ -31,6 +31,7 @@ export class FighterAI {
       rawSuperRate: 0.03, // 在出拳距離內直接放絕招的機率
       jumpInRate: 0.08, // 中距離跳入的機率
       supers: ['dog_bear', 'shake_head', 'kick_ball', 'dodge_step'], // 連段 / 直接放用的絕招（kick_ball 是抓取，不放進連段）
+      canSuper: () => true, // 現在能不能放絕招（SG 滿 1 格；main.js 提供）
     }
 
     // 1. merge options
@@ -149,7 +150,7 @@ export class FighterAI {
     // 出拳距離內
     const attack = this._pickAttack(dist)
     if (attack) {
-      if (r < this.rawSuperRate) {
+      if (r < this.rawSuperRate && this.canSuper()) {
         const key = this._pickSuper(self)
         if (key) {
           out.attack = key
@@ -230,7 +231,7 @@ export class FighterAI {
     // 前進到下一步：衝刺取消開始了、或下一招開始了
     const item = combo.route[combo.step]
     const key = item === 'super' ? combo.superKey : item
-    if (item === 'rush' && self.state === 'dash' && self.isRush) combo.step++
+    if (item === 'rush' && self.isRushing) combo.step++
     else if (item !== 'rush' && selfStarted && self.currentMove === key) combo.step++
 
     // 放棄：被打、被防禦、路線走完、或回到自由狀態一陣子
@@ -248,13 +249,19 @@ export class FighterAI {
     const nextKey = next === 'super' ? combo.superKey : next
     if (combo.pressedStep === combo.step) return true // 這一步已經按過了，等它開始
 
+    // SG 不滿 1 格：連段停在 SA 前
+    if (next === 'super' && !this.canSuper()) {
+      this.combo = null
+      return false
+    }
+
     if (next === 'rush') {
       // 衝刺取消：打中後、招式還沒結束
       if (self.canRush && self.hitConfirmed) {
         out.rush = true
         combo.pressedStep = combo.step
       }
-    } else if (self.state === 'dash' && self.isRush) {
+    } else if (self.isRushing) {
       // 衝刺取消中：直接按（前幾幀不能出招時 Fighter 會先記住）
       out.attack = nextKey
       combo.pressedStep = combo.step

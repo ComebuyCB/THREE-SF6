@@ -18,8 +18,9 @@ const DOWN = new THREE.Vector3(0, -1, 0)
  * - 出招朝自己面向；被打中的人轉向攻擊方，擊退 / 擊飛沿著攻擊方的方向；被擊飛撞到場景物體就反彈（launch.wallBounce）
  * - 防禦：不用另外按，攻擊打中的那一幀如果正往離開對手的方向移動（跟「朝對手」的夾角 90° 以上）就擋住（防禦動畫、防禦硬直）
  *   平常照常跑，不會因為要防禦而被卡住；GUI「P2 木樁防禦」打開時 P2 原地防禦
- * - 衝刺：同一個方向鍵 dashTapWindow 毫秒內連按兩下（往那個方向）、或 0 鍵（往移動方向，沒在移動就往面向）
- *   動作換成 dashStyle.anim（FastRun），位移是格鬥模式的 dashStyle.speedRate 倍；衝刺快結束前再連按可以接著衝（換方向也行）
+ * - 快跑：按著 sprint 鍵（P1 左 Shift、P2 右 Shift）跑步速度 × sprintRate、改播 dashStyle.anim（FastRun），沒有幀數限制
+ * - 衝刺取消：移動中按 0 = 往移動方向衝刺取消（同格鬥模式的「前 + 0」）；沒在移動只按 0 沒反應
+ *   衝刺取消的動作換成 dashStyle.anim（FastRun）
  * - 絕招沒有鏡頭演出：從動畫開頭直接播，原本演出凍結的幀數另一名角色凍結不動（Combat.freeze）
  * - 招式有 aimOpponent（例如風擺柳碎布）：放招時朝向對手；穿越（閃身步）每次穿越開始時對準對手
  *
@@ -52,16 +53,16 @@ export class FreeMode {
       lockOnTurnSpeed: 6, // 鎖定對手時鏡頭轉過去的速度：越大越快
       fps: 60, // 格鬥邏輯的幀率（同 fighter.js）
       overheadRate: 0.8, // 高度差超過身高的這個比例就不推擠（越過頭頂）
-      dashTapWindow: 250, // 連按兩下方向鍵的間隔（毫秒）內算衝刺
       dashStyle: { anim: 'fastRun', speedRate: 2 }, // 自由模式的衝刺：動作、位移倍率（相對格鬥模式）
+      sprintRate: 2, // 快跑：跑步速度倍率
       jumpSpeedRate: 2, // 自由模式斜跳的水平速度倍率（相對格鬥模式；跳的高度、滯空時間不變）
       // AI 隨意走動：每段跑多久、停多久（秒，範圍內隨機）
       wander: { moveTime: [1, 3], idleTime: [0.5, 2] },
       // AI 打架：遠的時候每段移動有 chaseRate 的機率追對手；離對手 engageDistance 公尺內改用格鬥模式的 AI
       aiFight: { chaseRate: 0.1, engageDistance: 5 },
       keys: {
-        p1: { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space' },
-        p2: { forward: 'ArrowUp', back: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' },
+        p1: { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft' },
+        p2: { forward: 'ArrowUp', back: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', sprint: 'ShiftRight' },
       },
     }
 
@@ -80,8 +81,7 @@ export class FreeMode {
     // 4. setup runtime state
     this.isActive = false
     this.fighters = {} // { p1, p2 }
-    // slot → { dir（格鬥邏輯的 +x 方向）, localRot（格鬥邏輯裡的轉向）, isEngine（由格鬥邏輯控制）, isJumpHeld,
-    //          lastTap（連按判斷）, tapDash（這幀連按出的衝刺方向）, queuedDashDir（衝刺中預約的下一段方向）, wander }
+    // slot → { dir（格鬥邏輯的 +x 方向）, localRot（格鬥邏輯裡的轉向）, isEngine（由格鬥邏輯控制）, isJumpHeld, wander }
     this.states = {}
     this.accumulator = 0 // 尚未消化的時間，累積滿 1 幀推進格鬥邏輯
     this.env = null // 場景模型（沒有場景 = 用 bounds 方框）
@@ -113,9 +113,6 @@ export class FreeMode {
       localRot: Math.PI / 2,
       isEngine: false,
       isJumpHeld: false,
-      lastTap: { code: '', time: 0 },
-      tapDash: null,
-      queuedDashDir: null,
       wander: { dir: new THREE.Vector3(), time: 0, isMoving: false, isChasing: false },
     }]))
     this.accumulator = 0
@@ -179,22 +176,6 @@ export class FreeMode {
     this.followBlend = { from: this.controls.target.clone(), t: 0 }
   }
 
-  /** 方向鍵按下（main.js 轉來）：同一個鍵 dashTapWindow 毫秒內連按兩下 = 往那個方向衝刺 */
-  onKeyDown(code, time) {
-    if (!this.isActive) return
-    Object.entries(this.keys).forEach(([slot, keys]) => {
-      if (![keys.forward, keys.back, keys.left, keys.right].includes(code)) return
-      const st = this.states[slot]
-      if (!st) return
-      if (st.lastTap.code === code && time - st.lastTap.time <= this.dashTapWindow) {
-        st.tapDash = code
-        st.lastTap = { code: '', time: 0 }
-      } else {
-        st.lastTap = { code, time }
-      }
-    })
-  }
-
   /** Esc：立刻取消所有出拳、招式、吸附、凍結；位置與面向保留，回到站立、交還給自由移動 */
   cancelAll() {
     if (!this.isActive) return
@@ -207,7 +188,7 @@ export class FreeMode {
       model.position.copy(pos)
       model.rotation.y = rot
       model.scale.x = Math.abs(model.scale.x)
-      Object.assign(this.states[slot], { isEngine: false, tapDash: null, queuedDashDir: null })
+      this.states[slot].isEngine = false
     })
     this.accumulator = 0
   }
@@ -240,7 +221,6 @@ export class FreeMode {
       Object.entries(this.fighters).forEach(([slot, fighter]) => {
         const st = this.states[slot]
         if (ai[slot] && st.isEngine && !this.combat.isFrozenOther(fighter)) raws[slot] = this._thinkAI(slot, fighter, st)
-        this._applyQueuedDash(fighter, st)
       })
       const active = Object.keys(this.fighters).filter(slot => this.states[slot].isEngine)
       if (active.length) {
@@ -294,25 +274,21 @@ export class FreeMode {
     const isJump = !!keys.jump && pressed.has(keys.jump)
     raw.jump = isJump && !st.isJumpHeld
     st.isJumpHeld = isJump
-    const tapDir = st.tapDash ? this._getKeyDir(keys, st.tapDash) : null
-    st.tapDash = null
-    if (tapDir) raw.dash = 1
     const isStandGuard = !!this.isStandGuard?.(slot)
     const isAway = !!moveDir && moveDir.dot(toOther) <= 0
     // 防禦姿勢只有木樁防禦（原地）；往後跑的防禦是被打中那一幀才判斷，不改變移動
     raw.guard = isStandGuard || isAway
     raw.standGuard = isStandGuard
     const isAction = !!pending.pendingAttack || pending.rushLife > 0
-    const needEngine = !fighter.canAct || isAction || raw.jump || !!tapDir || isStandGuard
+    const needEngine = !fighter.canAct || isAction || raw.jump || isStandGuard
 
     if (needEngine && fighter.canAct) {
       if (isStandGuard) this._aim(fighter, st, toOther)
-      else if (tapDir) this._aim(fighter, st, tapDir)
       else if (!st.isEngine) this._aim(fighter, st, moveDir ?? this._getFacingDir(fighter))
       if (raw.jump && moveDir) raw.move = 1 // 跑步中跳 = 往前跳
     }
-    // 衝刺中連按：記住方向，這段衝刺最後一幀轉過去接著衝（見 _applyQueuedDash）
-    if (tapDir && fighter.state === 'dash' && !fighter.isRush) st.queuedDashDir = tapDir
+    // 移動中按 0：轉向移動方向後當成「前 + 0」（衝刺取消）
+    if (moveDir && pending.rushLife > 0) raw.move = 1
     this._setEngine(fighter, st, needEngine)
     // 自由移動中：防禦狀態直接設定（格鬥邏輯控制中的人由 raw.guard 在推進時設定）
     if (!st.isEngine) fighter.isGuarding = raw.guard
@@ -358,24 +334,14 @@ export class FreeMode {
     fighter.model.scale.x = Math.abs(fighter.model.scale.x)
   }
 
-  /** 衝刺中預約的下一段：這段的最後一幀轉向新方向（格鬥邏輯的預約會在這一幀接著衝） */
-  _applyQueuedDash(fighter, st) {
-    if (!st.queuedDashDir) return
-    if (fighter.state !== 'dash' || fighter.isRush) {
-      st.queuedDashDir = null
-      return
-    }
-    if (fighter.framesUntilFree > 1) return
-    this._aim(fighter, st, st.queuedDashDir)
-    st.queuedDashDir = null
-  }
-
   /** 自由狀態：跑、轉向、播動畫；AI 隨意走動 */
   _updateFree(slot, fighter, st, pressed, ai, delta) {
     const dir = ai[slot] ? this._getWanderDir(fighter, st.wander, delta) : this._getInputDir(this.keys[slot], pressed)
-    const isMoved = dir ? this._move(fighter, dir, delta) : false
+    const sprintKey = this.keys[slot].sprint
+    const isSprint = !ai[slot] && !!dir && !!sprintKey && pressed.has(sprintKey)
+    const isMoved = dir ? this._move(fighter, dir, delta, isSprint ? this.sprintRate : 1) : false
     if (ai[slot] && dir && !isMoved) this._turnAway(st.wander) // AI 撞到東西：馬上換個方向繼續走
-    fighter.playLoop(dir ? this._getRunKey(fighter) : 'idle')
+    fighter.playLoop(dir ? this._getRunKey(fighter, isSprint) : 'idle')
     fighter.mixer.update(delta)
   }
 
@@ -483,14 +449,6 @@ export class FreeMode {
     return input.lengthSq() ? input.clone().normalize() : null
   }
 
-  /** 單一方向鍵的方向（以鏡頭為準） */
-  _getKeyDir(keys, code) {
-    if (code === keys.forward) return this.forward.clone()
-    if (code === keys.back) return this.forward.clone().negate()
-    if (code === keys.right) return this.right.clone()
-    return this.right.clone().negate()
-  }
-
   /**
    * AI 走動：跑一段、停一段，輪流；停 = null
    * 每段開始時決定方向：chaseRate 機率追對手（一直朝對手當下的位置跑），其餘隨機
@@ -523,12 +481,13 @@ export class FreeMode {
   }
 
   /** 沒有跑步動畫的人物用走路代替 */
-  _getRunKey(fighter) {
+  _getRunKey(fighter, isSprint = false) {
+    if (isSprint && fighter.actions[this.dashStyle.anim]) return this.dashStyle.anim
     return fighter.actions.run ? 'run' : 'walk'
   }
 
   /** 轉向並往 dir 跑一步；回傳是否有移動（整個被牆擋住 = false） */
-  _move(fighter, dir, delta) {
+  _move(fighter, dir, delta, speedRate = 1) {
     // 轉向移動方向（Mixamo 人物預設面向 +Z）：最短角度慢慢轉過去
     const model = fighter.model
     const goal = Math.atan2(dir.x, dir.z)
@@ -536,7 +495,7 @@ export class FreeMode {
     model.rotation.y += diff * Math.min(1, delta * this.turnSpeed)
     model.scale.x = Math.abs(model.scale.x)
 
-    const step = this._collide(model.position, this.step.copy(dir).multiplyScalar(this.runSpeed * delta))
+    const step = this._collide(model.position, this.step.copy(dir).multiplyScalar(this.runSpeed * speedRate * delta))
     model.position.add(step)
     return step.lengthSq() > 0
   }

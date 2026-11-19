@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { Gauge } from './gauge.js'
 
 /**
  * Combat：格鬥模式與自由模式共用的戰鬥流程（每秒 60 幀推進一幀）
@@ -35,6 +36,15 @@ export class Combat {
       dashBufferFrames: 5, // 前前 / 後後的最後幾幀內按會記住
       rushInputFrames: 8, // 衝刺取消鍵按下後記住幾幀
       knockdownSoundFrame: 30, // 被打飛後第幾幀播倒地音效
+      // 命中 / 被防禦時的血量與量條變化（點）：普通拳 × strength 倍率；SA 每個擊中判定只扣 superDamage 血
+      gaugeRules: {
+        strength: { light: 1, medium: 1.5, heavy: 2, airHeavy: 2 },
+        hit: { damage: 100, dg: 600, oppDg: 0, sg: 300, oppSg: 100 },
+        block: { damage: 0, dg: 300, oppDg: -1200, sg: 150, oppSg: 100 },
+        superDamage: 500,
+      },
+      // 空中命中（被打的人在空中、不是打飛）：下墜速度倍率，維持到各自落地
+      airHitFallRate: { attacker: 0.5, target: 0.25 },
       // 跟模式有關的處理（main.js 提供）
       hooks: {
         onHit: null, // (attacker, target, { move, isLaunch, isBlock, hitstop }) → 鏡頭晃動、命中鏡頭、受擊搖晃
@@ -69,6 +79,8 @@ export class Combat {
     this.freeze = null // 自由模式的絕招凍結：{ fighter（放招的人）, frames }，另一名角色不動
     this.lock = null // 吸附 / 抓取中：{ attacker, target, offset, isGrab, lift, juggleHits, seg }
     this.combos = { p1: 0, p2: 0 }
+    this.gauges = { p1: new Gauge(), p2: new Gauge() } // 血量、動力槽、絕招量條、虛血
+    this.wasDown = { p1: false, p2: false } // 上一幀倒地中（起身時回血用）
     this.prevPos = new Map() // 這幀推進前的位置（最遠距離判斷誰往外移動）
   }
 
@@ -90,10 +102,16 @@ export class Combat {
     this.freeze = null
     this.lock = null
     this.input = { p1: this.newInputState(), p2: this.newInputState() }
+    this.wasDown = { p1: false, p2: false }
     Object.keys(this.combos).forEach(slot => {
       this.combos[slot] = 0
       this.hooks.onCombo?.(slot, 0)
     })
+  }
+
+  /** 血量與量條回到初始值（重新開始、換人物時由 main.js 呼叫） */
+  resetGauges() {
+    Object.values(this.gauges).forEach(gauge => gauge.reset())
   }
 
   /** 對手放絕招（自由模式）的凍結期間 */
@@ -129,6 +147,10 @@ export class Combat {
     const f = this.fighters
     const inputs = {}
     active.forEach(slot => { inputs[slot] = this._getInput(slot, raws[slot] || {}) })
+    // SG 不滿 1 格：SA 鍵無效
+    active.forEach(slot => {
+      if (f[slot].moves[inputs[slot].attack]?.isSuper && !this.gauges[slot].canSuper) inputs[slot].attack = null
+    })
 
     // 衝刺取消：按下的瞬間（或預約後碰到對手時）發光並頓幀，頓幀結束的下一幀才開始衝刺
     if (!this.isRushFrozen) {
@@ -161,6 +183,8 @@ export class Combat {
       return
     }
 
+    Object.values(this.gauges).forEach(gauge => gauge.tick())
+
     this.prevPos = new Map(Object.values(f).map(fighter => [fighter, fighter.model.position.clone()]))
     active.forEach(slot => {
       const fighter = f[slot]
@@ -172,6 +196,11 @@ export class Combat {
     active.forEach(slot => {
       const fighter = f[slot]
       const st = this.input[slot]
+      // 衝刺取消開始（打中後、前 + 0、空中）：扣 1 格 DG
+      if (fighter.startedRush) {
+        this.gauges[slot].useRush()
+        fighter.startedRush = false
+      }
       if (fighter.usedRush) {
         st.rushLife = 0
         fighter.usedRush = false
@@ -192,6 +221,7 @@ export class Combat {
     this._updateBoxes()
     if (this.space.faceOpponents(f.p1, f.p2)) this._updateBoxes()
     this._checkHits()
+    this._checkGetUp()
     this.frameMeter?.record([f.p1.getFrameType(), f.p2.getFrameType()])
 
     this._playStepSounds(active.map(slot => f[slot]))
@@ -365,6 +395,7 @@ export class Combat {
   /** 絕招開始：停在招式第 0 幀、第 1 幀音效；之後交給模式（演出 / 凍結對手） */
   _startSuper(fighter, key) {
     const move = fighter.moves[key]
+    this.gauges[this._getSlot(fighter)].useSuper()
     this.space.run(fighter, () => fighter.startMove(key), false)
     this.playMoveSounds(move, 1, fighter) // 第 1 幀音效：按下絕招的瞬間
     // cutSounds：記住這招，被中斷時停掉它的音效（見 _checkSoundCut）
@@ -493,6 +524,7 @@ export class Combat {
         this.space.run(target, () => target.takeBlock(this.space.localX(target, attacker), move), false)
         this.sound.play('block')
         this.space.cornerPush(attacker, target)
+        this._applyGauges(attacker, target, true)
         this.hitstop = move.hitstop ?? this.hitstopFrames
         this.hooks.onHit?.(attacker, target, { move, isLaunch: false, isBlock: true, hitstop: this.hitstop })
         return
@@ -500,10 +532,16 @@ export class Combat {
 
       const isCombo = target.state === 'hit' || target.isLaunched // 對手還在硬直中（含被打飛的飛走中）被打到 = 連段
       const isLaunch = attacker.registerHit()
+      const isAirHit = target.isAirborne && !isLaunch && !target.isLaunched // 空中被普通攻擊打中：播飛走動畫、距離 = 擊退距離，雙方下墜變慢
       this.hitEffect.spawn(hitPoint, { type: move.isSuper || move.heavyHitEffect ? 'heavy' : 'hit', dir: hitDir })
       this.space.prepareTarget(target, attacker)
       this.space.run(target, () => target.takeHit(this.space.localX(target, attacker), move, isLaunch), false)
       attacker.onHitConfirm() // 衝刺取消、收招縮短、下一拳鏡像：防禦住的不算
+      if (isAirHit) {
+        target.slowFall(this.airHitFallRate.target)
+        attacker.slowFall(this.airHitFallRate.attacker)
+      }
+      this._applyGauges(attacker, target, false)
       if (!isLaunch) this.space.cornerPush(attacker, target)
       this.sound.play(move.isSuper ? 'superHit' : 'hit') // 受擊確認：受擊硬直第一幀
       // 絕招命中不頓幀，改成晃鏡頭
@@ -534,6 +572,37 @@ export class Combat {
         this.combos[slot] = 0
         this.hooks.onCombo?.(slot, 0)
       }
+    })
+  }
+
+  /**
+   * 命中 / 被防禦時的血量與量條變化（gaugeRules）
+   * 普通拳依 strength 倍率；SA 只有擊中時扣 superDamage 血；被擊中一律先結算虛血
+   */
+  _applyGauges(attacker, target, isBlock) {
+    const self = this.gauges[this._getSlot(attacker)]
+    const opp = this.gauges[this._getSlot(target)]
+    const key = attacker.currentMove
+    const rules = this.gaugeRules
+    if (attacker.moves[key]?.isSuper) {
+      if (!isBlock) opp.takeHit(rules.superDamage)
+      return
+    }
+    const rate = rules.strength[key] ?? 0
+    const r = isBlock ? rules.block : rules.hit
+    if (!isBlock) opp.takeHit(r.damage * rate)
+    self.addDg(r.dg * rate)
+    opp.addDg(r.oppDg * rate)
+    self.addSg(r.sg * rate)
+    opp.addSg(r.oppSg * rate)
+  }
+
+  /** 被打倒後起身（倒地狀態結束）：血量 0 的人回滿血 */
+  _checkGetUp() {
+    Object.entries(this.fighters).forEach(([slot, fighter]) => {
+      const isDown = fighter.state === 'down'
+      if (this.wasDown[slot] && !isDown) this.gauges[slot].onGetUp()
+      this.wasDown[slot] = isDown
     })
   }
 

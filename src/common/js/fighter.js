@@ -209,9 +209,10 @@ export class Fighter {
       superInvincibleFrames: 10, // 絕招前幾幀無敵（攻擊判定開始就結束）
       flyLandFrame: 34, // 飛走動畫第幾幀身體碰到地面（launch.height 的拋物線在這幀落地）
       flashGlow: 0.25, // 受擊時身體疊加的紅色自發光（0~1）
-      // 衝刺取消（按鈕 0）：輕 / 重攻擊命中後可取消成往前衝刺，衝刺中可以隨時出招
+      // 衝刺取消（按鈕 0）：普通攻擊打中 / 被防禦後按 0、或自由狀態按「前 + 0」，往前衝刺，衝刺中可以隨時出招
+      // 空中也可以（停在當下高度往前衝，之後落下）；消耗 DG 由 Combat 處理（startedRush）
       rush: {
-        moves: ['light', 'medium', 'heavy'], // 哪些招式命中後可以取消
+        moves: ['light', 'medium', 'heavy', 'airHeavy'], // 哪些招式打中 / 被防禦後可以取消
         glowTime: 0.5, // 發光秒數
         glowColor: 0x66ffcc,
         glowStrength: 0.6, // 發光強度（0~1）
@@ -281,6 +282,8 @@ export class Fighter {
     this.airFrame = 0 // 離地後經過幾幀，用來對應跳躍動畫
     this.hasAirAttacked = false // 一次跳躍只能出一招
     this.hasAirDashed = false // 一次跳躍只能空中衝刺一次
+    this.fallRate = 1 // 空中下墜速度倍率（空中命中時變慢，落地恢復；見 slowFall）
+    this.startedRush = false // 這一幀開始了衝刺取消（Combat 扣 DG 後清掉）
     this.flashFrame = 0
     this.materials = [] // { material, color, emissive }：clone 過的材質與原本的顏色、自發光
     this.hitConfirmed = false // 這次出招已經打中對手（防禦住不算），衝刺取消用
@@ -409,7 +412,7 @@ export class Fighter {
     }
 
     // 衝刺取消：停頓中（輸入會延到停頓結束這一幀）或前 lockFrames 幀按的招式先記住
-    const isRushLocked = this.state === 'dash' && this.isRush && this.stateFrame < this.rush.lockFrames
+    const isRushLocked = this.isRushing && this.stateFrame < this.rush.lockFrames
     if (input.attack && this.actions[input.attack] && ((input.rush && this.canRush) || isRushLocked)) this.rushAttack = input.attack
 
     if (input.rush && this.canRush) {
@@ -420,13 +423,18 @@ export class Fighter {
       this.chainKey = input.attack
     } else if (this.isRushReady && (input.attack || this.rushAttack) && !this.moves[input.attack || this.rushAttack]?.isSuper) {
       // 衝刺取消中，前 lockFrames 幀之後可以隨時出招（含先記住的）
+      // 空中：有 airMoves 的換成空中招式；這次跳躍不能再出空中攻擊
       const key = input.attack || this.rushAttack
       this.rushAttack = null
-      this.startMove(key)
+      if (this.isAirborne) this.hasAirAttacked = true
+      this.startMove(this.isAirborne ? this.airMoves[key] ?? key : key)
       this.isStateHeld = false
+    } else if (this._isAirRushInput(input)) {
+      // 空中「前 + 0」：空中衝刺取消
+      this.usedRush = true
+      this._startRush()
     } else if (airDashDir) {
       this._startAirDash(airDashDir)
-      if (input.rush) this.usedRush = true
     } else if (this.state === 'dash' || this.state === 'airDash') {
       this._dashStep()
     } else if (this.state === 'hit' || this.state === 'block') {
@@ -440,8 +448,8 @@ export class Fighter {
     } else if (this.canAct) {
       // 動作剛結束（這一幀才回到自由狀態）就接下一個動作時，main.js 的 faceTo 還沒跑到：先轉向對手
       this.faceTo(this.opponent)
-      // 5. 自由狀態按衝刺取消鍵 = 衝刺：按著方向往那邊（前前 / 後後），沒按方向往前
-      const walkDash = input.rush ? input.move || this.facingSign : 0
+      // 自由狀態按「前 + 0」= 衝刺取消（只能往前；只按 0 或後 + 0 沒反應）
+      const isRushStart = !!input.rush && input.move === this.facingSign
       if (input.attack && this.actions[input.attack]) {
         this.startMove(input.attack)
         this.isStateHeld = false
@@ -450,9 +458,11 @@ export class Fighter {
           this.rushQueued = true
           this.usedRush = true
         }
-      } else if (input.dash || walkDash) {
-        if (walkDash) this.usedRush = true
-        this.dashDir = input.dash || walkDash
+      } else if (isRushStart) {
+        this.usedRush = true
+        this._startRush()
+      } else if (input.dash) {
+        this.dashDir = input.dash
         this._setState('dash')
         this._dashStep() // 進入衝刺的這一幀也要移動，frames 幀才會剛好走完全程
       } else if (input.jump && this.actions.jump) {
@@ -672,6 +682,7 @@ export class Fighter {
    * @param {number} fromX 攻擊方位置，決定擊退方向
    * @param {{ hitStun: number, knockback: number }} move 攻擊方的招式數據
    * @param {boolean} isLaunch 打飛：播飛走 + 起身，只有起身無敵（空中、飛走中被打到也一律重新打飛）
+   * 在空中（跳躍、空中衝刺等）被不會打飛的攻擊打中：一樣播飛走動畫，但飛的距離 = 這一招在地面的擊退距離
    */
   takeHit(fromX, move, isLaunch = false) {
     this.grabFrame = 0
@@ -693,7 +704,9 @@ export class Fighter {
         this.isAirborne = true
         this.vy = 0
       }
-      this.flyScale = this._getFlyScale(launch.distance)
+      // 空中被普通攻擊打中（不是打飛、也不是飛走中）：飛的距離改用招式的擊退距離
+      const isAirHit = this.isAirborne && !isLaunch && !this.isLaunched
+      this.flyScale = this._getFlyScale(isAirHit ? this._getKnockDistance(move) : launch.distance)
       // 飛走中（或空中）被打到：先依攻擊方的位置轉向，面向打過來的方向，才會往被打的方向飛
       if ((this.isLaunched || this.isAirborne) && fromX !== this.x) {
         this.faceRight = fromX > this.x
@@ -715,6 +728,11 @@ export class Fighter {
       return
     }
 
+    // 空中受擊（沒有飛走動畫的人物）：從跳躍拋物線切到自由落下，水平只剩擊退
+    if (this.isAirborne) {
+      this._toFreeFall()
+      this.vx = 0
+    }
     const away = this.x >= fromX ? 1 : -1
     this.knockVelocity = away * move.knockback
     this.hitStunFrames = move.hitStun
@@ -985,6 +1003,8 @@ export class Fighter {
       return
     }
     if (this.canAct) return
+    // 飛走動畫播完還在空中（空中命中後下墜變慢）：停在飛走最後一幀，落地後才起身
+    if (this.state === 'down' && this.isAirborne && this.stateFrame >= this.flyFrames - 1) return
 
     this.stateFrame++
     if (this.state === 'air') return // 滯空由 _updateAirborne 依高度判斷落地
@@ -1006,8 +1026,13 @@ export class Fighter {
     } else if (this.stateFrame >= this.stateLength && this.isAirborne && this.getCurrentMove()?.holdUntilLand) {
       // holdUntilLand：停在最後一幀等落地（落地由 _updateAirborne 切到落地硬直）
     } else if (this.stateFrame >= this.stateLength) {
-      // 空中出招 / 空中衝刺結束還沒落地：回到滯空姿勢
-      this._setState(this.isAirborne && ['attack', 'airDash'].includes(this.state) ? 'air' : 'idle')
+      // 空中出招 / 空中衝刺 / 空中受擊結束還沒落地：回到滯空姿勢（受擊後到落地前不能再出招、衝刺）
+      const isToAir = this.isAirborne && ['attack', 'airDash', 'hit'].includes(this.state)
+      if (isToAir && this.state === 'hit') {
+        this.hasAirAttacked = true
+        this.hasAirDashed = true
+      }
+      this._setState(isToAir ? 'air' : 'idle')
     } else if (this.state === 'down' && this.stateFrame === this.flyFrames) {
       this._play('getUp', true)
     }
@@ -1095,13 +1120,30 @@ export class Fighter {
 
   /**
    * 這一幀要不要空中衝刺，回傳方向（世界座標 -1 / 1），0 = 不衝刺
-   * 連按兩下方向鍵照按的方向；按 0 時看按著的方向，沒按方向就照起跳方向，垂直跳則往前
+   * 只有連按兩下方向鍵（前前 / 後後），照按的方向
    */
   _getAirDashDir(input) {
     if (this.state !== 'air' || this.hasAirDashed) return 0
-    if (input.dash) return input.dash
-    if (!input.rush) return 0
-    return input.move || this.jumpDir || this.facingSign
+    return input.dash || 0
+  }
+
+  /** 空中「前 + 0」：滯空中、這次跳躍還沒空中衝刺過 */
+  _isAirRushInput(input) {
+    return this.state === 'air' && !this.hasAirDashed && !!input.rush && input.move === this.facingSign
+  }
+
+  /** 從跳躍拋物線切到自由落下，延續當下的垂直速度 */
+  _toFreeFall() {
+    if (!this.isJumpArc) return
+    this.vy = this._getJumpVelocity(this.airFrame / this.jump.air)
+    this.isJumpArc = false
+  }
+
+  /** 空中命中時下墜變慢：垂直運動 × rate，直到落地（Combat 在空中命中時呼叫） */
+  slowFall(rate) {
+    if (!this.isAirborne) return
+    this._toFreeFall()
+    this.fallRate = rate
   }
 
   /** 空中衝刺：停在當下高度水平衝 dash.frames 幀，之後自由落下；直到落地都不能出招、不能再衝刺 */
@@ -1122,6 +1164,7 @@ export class Fighter {
     this.isAirborne = true
     this.hasAirAttacked = false
     this.hasAirDashed = false
+    this.fallRate = 1
     this.airFrame = 0
     this.isJumpArc = true
     this.vy = this._getJumpPhysics().speed
@@ -1139,17 +1182,19 @@ export class Fighter {
       // 跳躍用公式算高度，最高點剛好 = 目標高度、第 air 幀剛好落地（逐幀累加速度會有誤差）
       this.y = this._getJumpHeight(this.airFrame / this.jump.air)
     } else {
-      // 空中被打飛：從當下的速度自由落下
-      this.y += this.vy * STEP
+      // 自由落下（空中被打、空中衝刺後）：從當下的速度落下；空中命中後整段垂直運動放慢 fallRate 倍
+      const t = STEP * this.fallRate
+      this.y += this.vy * t
       // 往上時用上升重力、往下時用下降重力，跟跳躍軌跡一致
       const { riseGravity, gravity } = this._getJumpPhysics()
-      this.vy -= (this.vy > 0 ? riseGravity : gravity) * STEP
+      this.vy -= (this.vy > 0 ? riseGravity : gravity) * t
     }
     if (this.y > 0) return
 
     this.y = 0
     this.vx = 0
     this.vy = 0
+    this.fallRate = 1
     this.isAirborne = false
     this.isJumpArc = false
     // 被打飛時讓飛走動畫繼續播；跳躍或空中出招則進入落地硬直（landing 為 0 時直接站立）
@@ -1239,6 +1284,11 @@ export class Fighter {
   }
 
   /** 飛走動畫位移的縮放倍率，讓總飛行距離 = distance 公尺；沒指定或動畫沒有位移時為 1 */
+  /** 地面受擊的擊退總距離（公尺）：初速 knockback、每秒衰減 e^-8，總距離 ≈ 初速 / 8 */
+  _getKnockDistance(move) {
+    return Math.abs(move.knockback ?? 0) / 8
+  }
+
   _getFlyScale(distance) {
     const values = this.actions.fly?.getClip().rootMotion?.values
     if (!distance || !values?.length) return 1
@@ -1329,7 +1379,7 @@ export class Fighter {
     this.stateFrame = 0
     this.isRush = false
     this.isRushAttack = state === 'attack' && wasRush
-    if (state !== 'dash') this.rushAttack = null
+    if (state !== 'dash' && state !== 'airDash') this.rushAttack = null
     if (state === 'attack') {
       this.startedMove = true
       this.passPlan = null // dashThrough：{ startX, endX }，由 main.js 在穿越第 1 幀決定
@@ -1567,12 +1617,24 @@ export class Fighter {
     return this.state === 'attack' && this.connected && this.rush.moves.includes(this.currentMove)
   }
 
-  /** 衝刺取消：發光 + 往前衝刺（距離 / 幀數同「前前」），衝刺中可以出招 */
+  /**
+   * 衝刺取消：發光 + 往前衝刺（距離 / 幀數同「前前」），衝刺中可以出招
+   * 空中：停在當下高度往前衝（同空中衝刺），之後落下；這次跳躍不能再空中衝刺
+   */
   _startRush() {
     this.rushQueued = false
+    this.startedRush = true
     const rushAttack = this.rushAttack
     this.dashDir = this.facingSign
-    this._setState('dash')
+    if (this.isAirborne) {
+      this.hasAirDashed = true
+      this.isJumpArc = false // 衝刺結束後從 0 速度自由落下
+      this.vx = 0
+      this.vy = 0
+      this._setState('airDash')
+    } else {
+      this._setState('dash')
+    }
     this.isRush = true
     this.rushAttack = rushAttack
     if (this.glowFrame <= 0) this.startGlow()
@@ -1595,6 +1657,8 @@ export class Fighter {
     this.queuedAttack = null
     this.rushQueued = false
     this.usedRush = false
+    this.startedRush = false
+    this.fallRate = 1
     this.keepRushAnim = false
     this.rushAttack = null
     this.isRush = false
@@ -1688,9 +1752,14 @@ export class Fighter {
     return Math.min(clipLength - offset, (move.length ?? Infinity) + delay)
   }
 
+  /** 衝刺取消中（地面或空中） */
+  get isRushing() {
+    return (this.state === 'dash' || this.state === 'airDash') && this.isRush
+  }
+
   /** 衝刺取消中、已過了不能出招的前 lockFrames 幀 */
   get isRushReady() {
-    return this.state === 'dash' && this.isRush && this.stateFrame >= this.rush.lockFrames
+    return this.isRushing && this.stateFrame >= this.rush.lockFrames
   }
 
   /**

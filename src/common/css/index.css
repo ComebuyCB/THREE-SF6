@@ -2,6 +2,16 @@ html, body { height: 100%; margin: 0; }
 
 body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-ui, sans-serif; }
 
+:root {
+  --hud-top: 64px; /* 上方血量 / 動力槽佔用的高度：幀數表、控制台從這裡往下放 */
+  --hud-bottom: 56px; /* 下方絕招量條佔用的高度：控制台不蓋到 */
+  --gauge-bg: rgba(0, 0, 0, .6);
+  --gauge-bd: rgba(255, 255, 255, .55);
+}
+
+/* lil-gui 控制台：讓出上方的血量列、下方的絕招量條 */
+.lil-gui.autoPlace { top: var(--hud-top); max-height: calc(100% - var(--hud-top) - var(--hud-bottom)); }
+
 .index_stage { position: fixed; inset: 0; }
 
 /* GUI「介面顯示」取消勾選的區塊 */
@@ -11,15 +21,19 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 .index_loading.is_hide { opacity: 0; pointer-events: none; }
 .index_loading-text { margin: 0; font-size: 18px; }
 
-/* 操作說明：畫面左下的 (?) 按鈕，按下後在上方打開小視窗（[hidden] 時收起） */
-.index_help { position: fixed; bottom: 12px; left: 12px; z-index: 6; display: flex; flex-direction: column-reverse; align-items: flex-start; gap: 8px; }
-.index_help-toggle { width: 36px; height: 36px; padding: 0; background: rgba(0, 0, 0, .6); border: 1px solid rgba(255, 255, 255, .35); border-radius: 50%; color: #fff; font: 700 18px/1 system-ui, sans-serif; cursor: pointer; }
+/* 畫面下方中間：操作說明 (?)、除錯 (bug) 按鈕；小視窗打開在按鈕列上方、置中（[hidden] 時收起）；疊在 lil-gui（z-index 1001）上面 */
+.index_dock { position: fixed; bottom: 12px; left: 50%; z-index: 1002; display: flex; gap: 8px; translate: -50% 0; }
+/* 依模式切換內容：data-mode="fight" 只在格鬥模式、"free" 只在自由模式顯示 */
+.index_dock:not(.is_free) [data-mode="free"],
+.index_dock.is_free [data-mode="fight"] { display: none; }
+.index_help-toggle { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; background: rgba(0, 0, 0, .6); border: 1px solid rgba(255, 255, 255, .35); border-radius: 50%; color: #fff; font: 700 18px/1 system-ui, sans-serif; cursor: pointer; }
 .index_help-toggle:hover,
 .index_help-toggle[aria-expanded="true"] { background: rgba(255, 255, 255, .2); }
-.index_help-panel { box-sizing: border-box; max-width: calc(100vw - 24px); max-height: calc(100vh - 80px); padding: 10px 12px; overflow-y: auto; background: rgba(0, 0, 0, .78); border-radius: 8px; }
-.index_help-panel:not([hidden]) { display: flex; flex-direction: column; gap: 10px; }
+.index_help-panel { position: absolute; bottom: calc(100% + 8px); left: 50%; box-sizing: border-box; width: max-content; max-width: calc(100vw - 24px); max-height: calc(100vh - var(--hud-top) - 60px); padding: 10px 12px; overflow-y: auto; background: rgba(0, 0, 0, .78); border-radius: 8px; }
+.index_help-panel:not([hidden]) { display: flex; flex-direction: column; gap: 10px; translate: -50% 0; }
 .index_help-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .index_help-head > ._title { margin: 0; font-size: 14px; }
+.index_help-head > ._title > ._mode { margin-left: 8px; padding: 1px 6px; background: rgba(255, 255, 255, .15); border-radius: 3px; font-size: 11px; font-weight: 400; vertical-align: 1px; }
 .index_help-close { padding: 0 4px; background: none; border: 0; color: rgba(255, 255, 255, .8); font-size: 20px; line-height: 1; cursor: pointer; }
 .index_help-close:hover { color: #fff; }
 .index_help-group { padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .15); }
@@ -51,7 +65,7 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 .index_key.is_down { --top: #5a6070; --side: #3a3e48; box-shadow: 0 1px 0 #111318; translate: 0 2px; }
 
 /* 幀數表：顏色仿快打旋風 6 */
-.index_frameMeter { --frame-startup: #3ddc6b; --frame-active: #ff3b4e; --frame-recovery: #3a7bff; --frame-stun: #ffd23f; --frame-block: #ff8c2e; --frame-dash: #9aa3b5; --frame-down: #ffffff; --frame-prejump: #a6defa; --frame-air: #4fb8f0; --frame-empty: rgba(255, 255, 255, .08); position: fixed; top: 12px; left: 12px; right: 270px; z-index: 5; padding: 8px 10px; background: rgba(0, 0, 0, .55); border-radius: 4px; font-size: 12px; }
+.index_frameMeter { --frame-startup: #3ddc6b; --frame-active: #ff3b4e; --frame-recovery: #3a7bff; --frame-stun: #ffd23f; --frame-block: #ff8c2e; --frame-dash: #9aa3b5; --frame-down: #ffffff; --frame-prejump: #a6defa; --frame-air: #4fb8f0; --frame-empty: rgba(255, 255, 255, .08); position: fixed; top: var(--hud-top); left: 12px; right: 270px; z-index: 5; padding: 8px 10px; background: rgba(0, 0, 0, .55); border-radius: 4px; font-size: 12px; }
 .index_frameMeter-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .index_frameMeter-row > ._label { flex: none; width: 20px; font-weight: 700; }
 .index_frameMeter-cells { display: flex; flex: 1; gap: 1px; min-width: 0; }
@@ -112,3 +126,29 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
   0% { transform: scale(1.35); }
   100% { transform: scale(1); }
 }
+
+/*
+ * 血量與動力槽（DG）：畫面上方，血條靠左右兩側、DG 靠畫面中間；P2 整塊左右鏡像
+ * 血量從外側往中間扣（剩下的血靠中間），虛血（WL）是剩下血量最外側的白色部分
+ * 數值由 hud.js 寫入 CSS 變數：--hp、--wl（0 ~ 1，佔血條全長的比例）、每格 --fill（0 ~ 1）
+ */
+.index_status { --hp-clr: #ffd23f; --dg-clr: #3ddc6b; position: fixed; top: 12px; left: 12px; z-index: 5; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; width: min(calc(50vw - 24px), 820px); pointer-events: none; }
+.index_status.is_p2 { left: auto; right: 12px; scale: -1 1; }
+.index_status-hp { --hp: 1; --wl: 0; position: relative; box-sizing: border-box; width: 100%; height: 18px; overflow: hidden; background: var(--gauge-bg); border: 2px solid var(--gauge-bd); border-radius: 3px; }
+.index_status-hp > ._fill { position: absolute; top: 0; right: 0; bottom: 0; width: calc(var(--hp) * 100%); background: linear-gradient(#ffe680, var(--hp-clr)); }
+.index_status-hp > ._wl { position: absolute; top: 0; bottom: 0; left: calc((1 - var(--hp)) * 100%); width: calc(var(--wl) * 100%); background: #fff; }
+.index_status-dg { display: flex; flex-direction: row-reverse; gap: 3px; width: min(60%, 320px); height: 10px; }
+.index_status-dg > ._cell { --fill: 1; position: relative; flex: 1; overflow: hidden; background: var(--gauge-bg); border: 1px solid var(--gauge-bd); border-radius: 2px; }
+.index_status-dg > ._cell::before { content: ''; position: absolute; inset: 0; background: var(--dg-clr); transform-origin: right; scale: var(--fill) 1; }
+.index_status-dg > ._cell.is_full::before { background: #7dffa0; box-shadow: inset 0 0 4px #fff; }
+
+/* 絕招量條（SG）：畫面下方，P1 左、P2 右；量條從數字那一側往外長 */
+.index_super { --sg-clr: #4fb8f0; position: fixed; bottom: 12px; z-index: 5; display: flex; align-items: center; gap: 8px; pointer-events: none; }
+.index_super.is_p1 { left: 12px; }
+.index_super.is_p2 { right: 12px; flex-direction: row-reverse; }
+.index_super > ._num { min-width: 1ch; color: var(--sg-clr); font-size: 32px; font-weight: 900; font-style: italic; line-height: 1; text-shadow: 0 2px 0 #123c5a; font-variant-numeric: tabular-nums; }
+.index_super-bar { display: flex; gap: 3px; width: min(30vw, 240px); height: 12px; }
+.index_super.is_p2 > .index_super-bar { scale: -1 1; }
+.index_super-bar > ._cell { --fill: 0; position: relative; flex: 1; overflow: hidden; background: var(--gauge-bg); border: 1px solid var(--gauge-bd); border-radius: 2px; }
+.index_super-bar > ._cell::before { content: ''; position: absolute; inset: 0; background: var(--sg-clr); transform-origin: left; scale: var(--fill) 1; }
+.index_super-bar > ._cell.is_full::before { background: #9fe0ff; box-shadow: inset 0 0 4px #fff; }

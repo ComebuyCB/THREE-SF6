@@ -7,6 +7,7 @@ import { FrameMeter } from './frameMeter.js'
 import { MixamoLoader } from './mixamoLoader.js'
 import { Stage } from './stage.js'
 import { Hud } from './hud.js'
+import { Popup } from './popup.js'
 import { Sound } from './sound.js'
 import { HitEffect } from './hitEffect.js'
 import { FootMarker } from './footMarker.js'
@@ -202,6 +203,7 @@ class FighterViewer {
         // 固定招式的絕招鍵：按鍵 → 招式 key
         supers: { Numpad1: 'dog_bear', Numpad2: 'shake_head', Numpad4: 'dodge_step', Numpad5: 'kick_ball', Numpad6: 'wind_step' },
       },
+      p2AttackKey: 'NumpadAdd', // 按著數字鍵盤 + 再按出招鍵 = P2 出招
       p2Keys: {
         left: 'ArrowLeft',
         right: 'ArrowRight',
@@ -227,9 +229,7 @@ class FighterViewer {
     this.loadingEl = document.querySelector('#loading')
     this.progressEl = document.querySelector('#loadingProgress')
     this.keycapEls = document.querySelectorAll('[data-key]')
-    this.helpToggleEl = document.querySelector('#helpToggle')
-    this.helpCloseEl = document.querySelector('#helpClose')
-    this.helpPanelEl = document.querySelector('#helpPanel')
+    this.helpDockEl = document.querySelector('#helpDock')
 
     // 4. setup runtime state
     this.clock = new THREE.Clock()
@@ -238,7 +238,11 @@ class FighterViewer {
     this.p1 = null
     this.p2 = null
     this.keys = new Set()
-    this.ai = { p1: new FighterAI(), p2: new FighterAI() } // GUI 勾選「AI 操作」時由 AI 按鍵
+    // GUI 勾選「AI 操作」時由 AI 按鍵；SG 不滿 1 格時不放絕招
+    this.ai = {
+      p1: new FighterAI({ canSuper: () => this.combat.gauges.p1.canSuper }),
+      p2: new FighterAI({ canSuper: () => this.combat.gauges.p2.canSuper }),
+    }
     this.pendingDash = { p1: 0, p2: 0 } // 格鬥模式連按兩下方向鍵：衝刺方向（世界座標），下一幀遊戲邏輯取走
     this.lastTap = { p1: { code: '', time: 0 }, p2: { code: '', time: 0 } } // 上一次按下的方向鍵，判斷連按用
     this.skyCache = {} // 天空名稱 → texture
@@ -307,7 +311,7 @@ class FighterViewer {
       timeScale: 1,
       paused: false,
       moveSpeed: 2,
-      showDebug: true, // 除錯顯示（P）：X 軸刻度尺與座標 + 判定框 + 左右邊界牆
+      showDebug: false, // 除錯顯示（P）：X 軸刻度尺與座標 + 判定框 + 左右邊界牆
       cameraCollision: false, // 鏡頭避開物體（B）：注視點和鏡頭之間被場景擋住時，鏡頭拉近到物體前面
       showXray: true, // 透視剪影（X）：鏡頭跟隨的人（自由模式跟隨的人、格鬥模式 P1）被場景擋住時，畫出剪影
       showFrameMeter: true, // 幀數表顯示（O）
@@ -336,8 +340,11 @@ class FighterViewer {
 
   bindEvents() {
     window.addEventListener('resize', () => this._resize())
-    this.helpToggleEl.addEventListener('click', () => this._toggleHelp())
-    this.helpCloseEl.addEventListener('click', () => this._toggleHelp(false))
+    // 操作說明 (?)、除錯 (bug)：一次只開一個
+    const closeOthers = (popup, isOpen) => {
+      if (isOpen) this.popups.forEach(other => other !== popup && other.isOpen && other.toggle(false))
+    }
+    this.popups = ['#help', '#debugHelp'].filter(el => document.querySelector(el)).map(el => new Popup({ el, onToggle: closeOthers }))
 
     // 鎖定鏡頭時滑鼠左鍵拖曳轉鏡頭（一般時由 OrbitControls 處理）
     const canvas = this.renderer.domElement
@@ -363,9 +370,9 @@ class FighterViewer {
     canvas.addEventListener('pointercancel', endDrag)
 
     window.addEventListener('keydown', e => {
-      // 出招鍵（數字鍵）：按著 Shift = P2 出招，否則 P1；該玩家由 AI 操作時不理會
+      // 出招鍵（數字鍵）：按著數字鍵盤 + = P2 出招，否則 P1；該玩家由 AI 操作時不理會
       const isAttackKey = this._isAttackKey(e.code)
-      const slot = isAttackKey && this._isShiftAttack(e) ? 'p2' : 'p1'
+      const slot = isAttackKey && this.keys.has(this.p2AttackKey) ? 'p2' : 'p1'
       if (!e.repeat && isAttackKey && !this.params[`${slot}AI`]) {
         const st = this.combat.input[slot]
         if (e.code === this.p1Keys.light) st.pendingAttack = 'light'
@@ -375,9 +382,8 @@ class FighterViewer {
         if (e.code === this.p1Keys.super) st.pendingAttack = this.params.superMove
         if (this.p1Keys.supers[e.code]) st.pendingAttack = this.p1Keys.supers[e.code]
       }
-      // 連按兩下方向鍵 = 衝刺：格鬥模式看左右鍵，自由模式四個方向都算（見 FreeMode.onKeyDown）
-      if (!e.repeat && this.freeMode.isActive) this.freeMode.onKeyDown(e.code, performance.now())
-      else if (!e.repeat) {
+      // 連按兩下方向鍵 = 衝刺：只有格鬥模式（自由模式用 Shift 快跑）
+      if (!e.repeat && !this.freeMode.isActive) {
         this._detectDash('p1', e.code)
         this._detectDash('p2', e.code)
       }
@@ -420,23 +426,13 @@ class FighterViewer {
     })
   }
 
-  /** 出招鍵（輕 / 中 / 重 / 衝刺取消 / 絕招）：P1 直接按、P2 按著 Shift 按同一組鍵 */
+  /** 出招鍵（輕 / 中 / 重 / 衝刺取消 / 絕招）：P1 直接按、P2 按著數字鍵盤 + 按同一組鍵 */
   _isAttackKey(code) {
     const k = this.p1Keys
     return [k.light, k.medium, k.heavy, k.rush, k.super].includes(code) || !!k.supers[code]
   }
 
-  /**
-   * 出招鍵是否按著 Shift（= P2 出招）
-   * Windows 在 NumLock 開著時，Shift + 數字鍵盤會被系統暫時放開 Shift、改送 Home / ↑ / Insert 等鍵：
-   * e.shiftKey 是 false，但 e.key 不是數字，用這點判斷（e.code 仍是 Numpad7 等，所以出招鍵照常對得上）
-   */
-  _isShiftAttack(e) {
-    if (e.shiftKey) return true
-    return e.code.startsWith('Numpad') && e.getModifierState('NumLock') && !/^\d$/.test(e.key)
-  }
-
-  /** 幀數表顯示 / 隱藏（O、GUI「顯示幀數表」）；左下的操作說明 (?) 不受影響 */
+  /** 幀數表顯示 / 隱藏（O、GUI「顯示幀數表」）；下方的操作說明 (?) 不受影響 */
   _setFrameMeterVisible(isVisible) {
     this.params.showFrameMeter = isVisible
     document.querySelector('#frameMeter')?.classList.toggle('is_uiHide', !isVisible)
@@ -447,12 +443,6 @@ class FighterViewer {
   _setXrayVisible(isVisible) {
     this.params.showXray = isVisible
     this.guiControllers?.showXray.updateDisplay()
-  }
-
-  /** 操作說明小視窗開關（左下 (?)、視窗裡的 ×）；isOpen 沒給 = 切換 */
-  _toggleHelp(isOpen = this.helpPanelEl.hidden) {
-    this.helpPanelEl.hidden = !isOpen
-    this.helpToggleEl.setAttribute('aria-expanded', String(isOpen))
   }
 
   /** 連段數顯示 / 隱藏（GUI「顯示連段數」） */
@@ -499,7 +489,7 @@ class FighterViewer {
     if (el) el.textContent = this.params.superMove
   }
 
-  /** 畫面左下的按鍵示意：按著的鍵亮起 */
+  /** 操作說明裡的按鍵示意：按著的鍵亮起 */
   _updateKeycaps() {
     this.keycapEls.forEach(el => el.classList.toggle('is_down', this.keys.has(el.dataset.key)))
   }
@@ -523,6 +513,7 @@ class FighterViewer {
     this._endOrbitCamera()
     prev?.dispose()
     this.combat.reset()
+    this.combat.resetGauges() // 換人物：血量與量條回到初始值
     this[slot] = new Fighter({
       scene: this.scene,
       source,
@@ -864,7 +855,6 @@ class FighterViewer {
       // 離對手近時用格鬥模式的 AI（對手已換算到自己的方向上，沒有邊界牆）
       aiThink: (slot, self, opponent) => this.ai[slot].think(self, opponent, Infinity),
       isStandGuard: slot => slot === 'p2' && this.params.p2Guard,
-      dashTapWindow: this.dashTapWindow,
     })
     this.hud = new Hud({ camera: this.camera, canvas: this.renderer.domElement, showCoords: this.params.showDebug })
   }
@@ -1018,7 +1008,9 @@ class FighterViewer {
     gui.add(this.params, 'p2Guard').name('P2 木樁防禦')
     this.guiControllers = {} // 快捷鍵改了數值時要更新顯示的控制項
 
-    const bgFolder = gui.addFolder('背景')
+    this._setupGaugeGui(gui)
+
+    const bgFolder = gui.addFolder('背景').close() // 預設收起
     const skyFolder = bgFolder.addFolder('天空盒')
     skyFolder.add(this.params, 'sky', Object.keys(this.skies)).name('天空').listen().onChange(v => this.setSky(v))
     skyFolder.add(this.params, 'skyRotation', 0, 360, 1).name('轉動（度）').onChange(() => this._applySkyRotation())
@@ -1054,6 +1046,51 @@ class FighterViewer {
     debugFolder.add(this.params, 'showSkeleton').name('顯示骨架').onChange(v => {
       fighters().forEach(f => f.setSkeletonVisible(v))
     })
+  }
+
+  /**
+   * GUI「戰鬥數值」：血量 / 量條的初始值與回復速度、命中 / 被防禦時的增減（點）
+   * 量條設定改 P1 的 Gauge 並同步到 P2；命中數值直接改 Combat.gaugeRules（雙方共用）
+   * 初始值（血量上限、初始格數）按「重置血量與量條」或換人物後才生效
+   */
+  _setupGaugeGui(gui) {
+    const folder = gui.addFolder('戰鬥數值')
+    const { p1, p2 } = this.combat.gauges
+    const rules = this.combat.gaugeRules
+    const addGauge = (target, key, name, min, max, step) => {
+      target.add(p1, key, min, max, step).name(name).onChange(v => { p2[key] = v })
+    }
+
+    const baseFolder = folder.addFolder('初始值')
+    addGauge(baseFolder, 'maxHp', '血量上限', 1000, 30000, 500)
+    addGauge(baseFolder, 'barSize', 'DG / SG 每格點數', 1000, 12000, 500)
+    addGauge(baseFolder, 'startDgBars', 'DG 初始格數', 0, p1.maxBars, 1)
+    addGauge(baseFolder, 'startSgBars', 'SG 初始格數', 0, p1.maxBars, 1)
+    baseFolder.add({ reset: () => this.combat.resetGauges() }, 'reset').name('重置血量與量條')
+
+    const regenFolder = folder.addFolder('回復 / 消耗')
+    addGauge(regenFolder, 'dgRegen', 'DG 回復（每 60 幀）', 0, 12000, 100)
+    addGauge(regenFolder, 'sgRegen', 'SG 回復（每 60 幀）', 0, 3000, 50)
+    addGauge(regenFolder, 'wlDecay', '虛血 WL 減少（每 60 幀）', 0, 2000, 50)
+    addGauge(regenFolder, 'emptyRushWL', 'DG 不足衝刺取消：WL 增加', 0, 5000, 100)
+    addGauge(regenFolder, 'overflowPerWL', '防禦溢出幾點 DG = 1 WL', 1, 100, 1)
+    addGauge(regenFolder, 'dgEmptyDelay', 'DG 歸 0 後幾幀才回復', 0, 600, 10)
+
+    const strengthFolder = folder.addFolder('招式倍率')
+    const strengthNames = { light: '輕拳', medium: '中拳', heavy: '重拳', airHeavy: '空中重攻擊' }
+    Object.entries(strengthNames).forEach(([key, name]) => strengthFolder.add(rules.strength, key, 0, 5, 0.1).name(name))
+
+    // 擊中 / 被防禦：攻擊方與被打方的增減（× 招式倍率）
+    const fieldNames = { damage: '傷害（敵血量減少）', dg: 'DG', oppDg: '敵 DG', sg: 'SG', oppSg: '敵 SG' }
+    ;[['hit', '擊中'], ['block', '被防禦']].forEach(([type, title]) => {
+      const sub = folder.addFolder(title)
+      Object.entries(fieldNames).forEach(([key, name]) => {
+        const [min, max] = key === 'damage' ? [0, 2000] : [-3000, 3000]
+        sub.add(rules[type], key, min, max, 10).name(name)
+      })
+    })
+
+    folder.add(rules, 'superDamage', 0, 3000, 50).name('SA 每次擊中傷害')
   }
 
   /**
@@ -1269,6 +1306,7 @@ class FighterViewer {
       this.combat.space = fm.space
       fm.enter({ p1: this.p1, p2: this.p2 }, this.envModel)
       this.hud.setCoordsVisible(false)
+      this._setHelpMode(true)
       return
     }
 
@@ -1283,6 +1321,12 @@ class FighterViewer {
     this.camera.position.copy(this.defaultCamera.pos)
     this.cameraPull = 0
     this.hud.setCoordsVisible(this.params.showDebug)
+    this._setHelpMode(false)
+  }
+
+  /** 操作說明 / 除錯視窗切換成自由 / 格鬥模式的內容 */
+  _setHelpMode(isFree) {
+    this.helpDockEl.classList.toggle('is_free', isFree)
   }
 
   /** 自由模式的 Esc：立刻取消所有出拳、招式（位置、面向保留），停掉音效、特效、晃鏡頭與輸入預約 */
@@ -1704,6 +1748,7 @@ class FighterViewer {
     // 演出中由 _updateCinematic 控制鏡頭、命中鏡頭中由 _updateHitCamera 控制、環繞中由 _updateOrbitCamera 控制
     if (!this._isCameraLocked()) this.controls.update()
     this.hud.update(realDelta)
+    this.hud.updateGauges(this.combat.gauges)
     this.skyDome.update(realDelta, this.camera)
 
     this._updateXray()
