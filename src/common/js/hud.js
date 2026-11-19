@@ -15,6 +15,7 @@ export class Hud {
       combo: { p1: '#comboP1', p2: '#comboP2' },
       status: { p1: '#statusP1', p2: '#statusP2' }, // 血量 + 動力槽
       superGauge: { p1: '#superP1', p2: '#superP2' }, // 絕招量條
+      comboDebug: '#comboDebug', // 連段傷害（除錯）
       showCoords: true,
       comboMin: 2, // 幾下以上才顯示
       comboHideDelay: 1.2, // 連段結束後幾秒淡出（秒）
@@ -48,6 +49,8 @@ export class Hud {
       const dg = status.querySelector('.js-gauge-dg')
       const sg = superGauge.querySelector('.js-gauge-sg')
       return [slot, {
+        status,
+        name: status.querySelector('.js-status-name'), // DG 另一側的角色名字
         hp,
         dg,
         sg,
@@ -55,6 +58,12 @@ export class Hud {
         sgCells: [...sg.children],
         sgNum: superGauge.querySelector('.js-gauge-sg-num'),
       }]
+    }))
+    // 連段傷害（除錯）：每個玩家一欄
+    const comboDebugEl = document.querySelector(this.comboDebug)
+    this.comboDebugEls = Object.fromEntries(['p1', 'p2'].map(slot => {
+      const col = comboDebugEl?.querySelector(`._col.is_${slot}`)
+      return [slot, { damage: col?.querySelector('.js-combo-damage'), scale: col?.querySelector('.js-combo-scale') }]
     }))
     this.projected = new THREE.Vector3()
 
@@ -127,11 +136,35 @@ export class Hud {
       this._setCells(els.sgCells, g.sg, g.barSize)
       this._setText(els.sgNum, Math.floor(g.sg / g.barSize))
       this._setAttr(els.hp, 'aria-valuemax', g.maxHp)
-      this._setAttr(els.dg, 'aria-valuemax', g.maxPoints)
+      this._setAttr(els.dg, 'aria-valuemax', g.dgMaxPoints)
       this._setAttr(els.sg, 'aria-valuemax', g.maxPoints)
       this._setAttr(els.hp, 'aria-valuenow', Math.round(g.hp))
       this._setAttr(els.dg, 'aria-valuenow', Math.round(g.dg))
       this._setAttr(els.sg, 'aria-valuenow', Math.round(g.sg))
+    })
+  }
+
+  /** DG 另一側顯示角色名字 */
+  setName(slot, name) {
+    const el = this.gauges[slot]?.name
+    if (el) el.textContent = name
+  }
+
+  /** AI 操作中：名字旁的紅點閃爍 */
+  setAI(slot, isOn) {
+    this.gauges[slot]?.status.classList.toggle('is_ai', isOn)
+  }
+
+  /**
+   * 連段傷害（除錯）：這次（或上一次）連段的總傷害、下一擊的補正
+   * @param {{ p1: { scale: number, damage: number }, p2: { scale: number, damage: number } }} stats Combat.comboStats
+   */
+  updateComboDebug(stats) {
+    Object.entries(this.comboDebugEls).forEach(([slot, els]) => {
+      const stat = stats[slot]
+      if (!stat || !els.damage) return
+      this._setText(els.damage, stat.damage)
+      this._setText(els.scale, `${Math.round(stat.scale * 100)}%`)
     })
   }
 

@@ -3,7 +3,7 @@ html, body { height: 100%; margin: 0; }
 body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-ui, sans-serif; }
 
 :root {
-  --hud-top: 64px; /* 上方血量 / 動力槽佔用的高度：幀數表、控制台從這裡往下放 */
+  --hud-top: 76px; /* 上方血量 / 動力槽佔用的高度：幀數表、控制台從這裡往下放 */
   --hud-bottom: 56px; /* 下方絕招量條佔用的高度：控制台不蓋到 */
   --gauge-bg: rgba(0, 0, 0, .6);
   --gauge-bd: rgba(255, 255, 255, .55);
@@ -62,10 +62,11 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 .index_key.is_heavy { --clr: #ff6b6b; }
 .index_key.is_super { --clr: #d59bff; }
 .index_key.is_rush { --clr: #66ffcc; }
+.index_key.is_locked { opacity: .35; } /* 還沒解鎖的絕招 */
 .index_key.is_down { --top: #5a6070; --side: #3a3e48; box-shadow: 0 1px 0 #111318; translate: 0 2px; }
 
 /* 幀數表：顏色仿快打旋風 6 */
-.index_frameMeter { --frame-startup: #3ddc6b; --frame-active: #ff3b4e; --frame-recovery: #3a7bff; --frame-stun: #ffd23f; --frame-block: #ff8c2e; --frame-dash: #9aa3b5; --frame-down: #ffffff; --frame-prejump: #a6defa; --frame-air: #4fb8f0; --frame-empty: rgba(255, 255, 255, .08); position: fixed; top: var(--hud-top); left: 12px; right: 270px; z-index: 5; padding: 8px 10px; background: rgba(0, 0, 0, .55); border-radius: 4px; font-size: 12px; }
+.index_frameMeter { --frame-startup: #3ddc6b; --frame-active: #ff3b4e; --frame-recovery: #3a7bff; --frame-stun: #ffd23f; --frame-block: #ff8c2e; --frame-dash: #9aa3b5; --frame-down: #ffffff; --frame-prejump: #a6defa; --frame-air: #4fb8f0; --frame-grab: #8b5a2b; --frame-empty: rgba(255, 255, 255, .08); position: fixed; bottom: 56px; left: 50%; z-index: 5; box-sizing: border-box; width: min(1000px, calc(100vw - 24px)); padding: 8px 10px; translate: -50% 0; background: rgba(0, 0, 0, .55); border-radius: 4px; font-size: 12px; }
 .index_frameMeter-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .index_frameMeter-row > ._label { flex: none; width: 20px; font-weight: 700; }
 .index_frameMeter-cells { display: flex; flex: 1; gap: 1px; min-width: 0; }
@@ -98,16 +99,15 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 .index_frameMeter-legend > ._item.is_prejump { --clr: var(--frame-prejump); }
 .index_frameMeter-cell.is_air,
 .index_frameMeter-legend > ._item.is_air { --clr: var(--frame-air); }
+.index_frameMeter-cell.is_grab,
+.index_frameMeter-legend > ._item.is_grab { --clr: var(--frame-grab); }
 /* 凍結中的前搖：透明底 + 綠色虛線框 */
 .index_frameMeter-cell.is_frozen,
 .index_frameMeter-legend > ._item.is_frozen { --clr: transparent; --bd-clr: var(--frame-startup); }
 .index_frameMeter-cell.is_frozen,
 .index_frameMeter-legend > ._item.is_frozen::before { border-style: dashed; }
 
-/* 窄螢幕時控制台會蓋住上方，幀數表改放到下方提示文字上面 */
-@media (max-width: 767px) {
-  .index_frameMeter { top: auto; right: 12px; bottom: 240px; }
-}
+/* 幀數表放在畫面下方中間、(?)(bug) 按鈕列的上方 */
 
 /* 人物腳底的即時座標：位置由 JS 寫入 transform */
 .index_coord { position: fixed; top: 0; left: 0; z-index: 4; margin: 0; padding: 2px 6px; background: rgba(0, 0, 0, .6); border-radius: 3px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; translate: -50% 8px; }
@@ -134,20 +134,59 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
  */
 .index_status { --hp-clr: #ffd23f; --dg-clr: #3ddc6b; position: fixed; top: 12px; left: 12px; z-index: 5; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; width: min(calc(50vw - 24px), 820px); pointer-events: none; }
 .index_status.is_p2 { left: auto; right: 12px; scale: -1 1; }
-.index_status-hp { --hp: 1; --wl: 0; position: relative; box-sizing: border-box; width: 100%; height: 18px; overflow: hidden; background: var(--gauge-bg); border: 2px solid var(--gauge-bd); border-radius: 3px; }
+.index_status-hp { --hp: 1; --wl: 0; position: relative; box-sizing: border-box; width: 100%; height: 26px; overflow: hidden; background: var(--gauge-bg); border: 2px solid var(--gauge-bd); border-radius: 3px; }
 .index_status-hp > ._fill { position: absolute; top: 0; right: 0; bottom: 0; width: calc(var(--hp) * 100%); background: linear-gradient(#ffe680, var(--hp-clr)); }
 .index_status-hp > ._wl { position: absolute; top: 0; bottom: 0; left: calc((1 - var(--hp)) * 100%); width: calc(var(--wl) * 100%); background: #fff; }
-.index_status-dg { display: flex; flex-direction: row-reverse; gap: 3px; width: min(60%, 320px); height: 10px; }
+/* DG 那一列：外側是角色名字（+ AI 紅點），內側是 DG；P2 整塊鏡像，名字再翻回來 */
+.index_status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
+.index_status-info { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 0; font-size: 14px; font-weight: 800; font-style: italic; letter-spacing: .04em; text-shadow: 0 1px 2px #000; white-space: nowrap; }
+.index_status.is_p2 .index_status-info { scale: -1 1; }
+.index_status-info > ._name { overflow: hidden; text-overflow: ellipsis; }
+.index_status-info > ._ai { display: none; flex: none; width: 10px; height: 10px; background: #ff3344; border-radius: 50%; box-shadow: 0 0 6px #ff3344; animation: index_aiBlink 1s steps(2, jump-none) infinite; }
+.index_status.is_ai .index_status-info > ._ai { display: block; }
+@keyframes index_aiBlink {
+  0% { opacity: 1; }
+  100% { opacity: .15; }
+}
+.index_status-dg { display: flex; flex: none; flex-direction: row-reverse; gap: 3px; width: min(60%, 320px); height: 14px; }
 .index_status-dg > ._cell { --fill: 1; position: relative; flex: 1; overflow: hidden; background: var(--gauge-bg); border: 1px solid var(--gauge-bd); border-radius: 2px; }
 .index_status-dg > ._cell::before { content: ''; position: absolute; inset: 0; background: var(--dg-clr); transform-origin: right; scale: var(--fill) 1; }
 .index_status-dg > ._cell.is_full::before { background: #7dffa0; box-shadow: inset 0 0 4px #fff; }
+
+/* 連段傷害（除錯）：上方兩條血量中間的空白處 */
+.index_comboDebug { position: fixed; top: 12px; left: 50%; z-index: 6; display: flex; gap: 10px; padding: 4px 8px; background: rgba(0, 0, 0, .6); border-radius: 4px; font-size: 11px; line-height: 1.35; translate: -50% 0; pointer-events: none; }
+.index_comboDebug > ._col { display: grid; grid-template-columns: auto auto; gap: 0 6px; margin: 0; }
+.index_comboDebug > ._col > dt { opacity: .7; }
+.index_comboDebug > ._col > dd { margin: 0; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 升級牌（roguelike.js）：P2 被打倒時蓋在畫面上，選完收起（[hidden]） */
+.index_cards { position: fixed; inset: 0; z-index: 1003; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 16px; background: rgba(0, 0, 0, .6); }
+.index_cards[hidden] { display: none; }
+.index_cards-title { margin: 0; font-size: 24px; font-style: italic; color: #ffd23f; text-align: center; text-shadow: 0 2px 0 #b3361f; }
+.index_cards-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; }
+.index_cards-card { display: flex; flex-direction: column; gap: 10px; box-sizing: border-box; width: 200px; min-height: 260px; padding: 16px; background: linear-gradient(#2b2f3a, #1a1c22); border: 2px solid rgba(255, 255, 255, .3); border-radius: 12px; color: #fff; font: inherit; text-align: left; cursor: pointer; transition: translate .15s, border-color .15s; }
+.index_cards-card:hover,
+.index_cards-card:focus-visible { border-color: #ffd23f; translate: 0 -6px; }
+.index_cards-card > ._head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.index_cards-card > ._head > ._group { padding: 2px 8px; background: rgba(255, 210, 63, .18); border-radius: 999px; font-size: 12px; color: #ffd23f; }
+.index_cards-card > ._head > ._key { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: rgba(255, 255, 255, .15); border-radius: 50%; font-weight: 700; }
+.index_cards-card > ._title { font-size: 18px; line-height: 1.3; color: #ffd23f; }
+.index_cards-card > ._desc { font-size: 13px; line-height: 1.5; color: rgba(255, 255, 255, .8); }
+
+/* 結算（P1 被打倒）：沿用升級牌的全畫面遮罩 */
+.index_over { background: rgba(0, 0, 0, .75); }
+.index_over-stage { margin: 0; font-size: 18px; color: rgba(255, 255, 255, .8); }
+.index_over-rank { margin: 0; font-size: 56px; font-weight: 900; font-style: italic; letter-spacing: .1em; color: #ffd23f; text-shadow: 0 3px 0 #b3361f, 0 0 16px rgba(255, 120, 40, .6); }
+.index_over-restart { padding: 10px 32px; background: #ffd23f; border: 0; border-radius: 999px; color: #1b1d22; font: 700 18px/1.2 system-ui, sans-serif; cursor: pointer; }
+.index_over-restart:hover,
+.index_over-restart:focus-visible { background: #ffe680; outline: 2px solid #fff; outline-offset: 2px; }
 
 /* 絕招量條（SG）：畫面下方，P1 左、P2 右；量條從數字那一側往外長 */
 .index_super { --sg-clr: #4fb8f0; position: fixed; bottom: 12px; z-index: 5; display: flex; align-items: center; gap: 8px; pointer-events: none; }
 .index_super.is_p1 { left: 12px; }
 .index_super.is_p2 { right: 12px; flex-direction: row-reverse; }
 .index_super > ._num { min-width: 1ch; color: var(--sg-clr); font-size: 32px; font-weight: 900; font-style: italic; line-height: 1; text-shadow: 0 2px 0 #123c5a; font-variant-numeric: tabular-nums; }
-.index_super-bar { display: flex; gap: 3px; width: min(30vw, 240px); height: 12px; }
+.index_super-bar { display: flex; gap: 3px; width: min(30vw, 240px); height: 18px; }
 .index_super.is_p2 > .index_super-bar { scale: -1 1; }
 .index_super-bar > ._cell { --fill: 0; position: relative; flex: 1; overflow: hidden; background: var(--gauge-bg); border: 1px solid var(--gauge-bd); border-radius: 2px; }
 .index_super-bar > ._cell::before { content: ''; position: absolute; inset: 0; background: var(--sg-clr); transform-origin: left; scale: var(--fill) 1; }

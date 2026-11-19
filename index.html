@@ -43,6 +43,7 @@
         <li class="_item is_startup">前搖</li>
         <li class="_item is_frozen">前搖（演出凍結中）</li>
         <li class="_item is_active">攻擊判定</li>
+        <li class="_item is_grab">抓技判定</li>
         <li class="_item is_recovery">收招 / 落地</li>
         <li class="_item is_stun">受擊硬直</li>
         <li class="_item is_block">防禦硬直</li>
@@ -73,10 +74,16 @@
       <span class="_fill"></span>
       <span class="_wl"></span>
     </div>
-    <div class="index_status-dg js-gauge-dg" role="meter" aria-label="P1 動力槽" aria-valuemin="0" aria-valuemax="18000" aria-valuenow="18000">
-      <span class="_cell"></span>
-      <span class="_cell"></span>
-      <span class="_cell"></span>
+    <!-- DG 另一側：角色名字（hud.js setName）、AI 操作中的紅點（is_ai 時閃爍） -->
+    <div class="index_status-row">
+      <p class="index_status-info"><span class="_ai" title="AI 操作中"></span><span class="_name js-status-name"></span></p>
+      <div class="index_status-dg js-gauge-dg" role="meter" aria-label="P1 動力槽" aria-valuemin="0" aria-valuemax="30000" aria-valuenow="30000">
+        <span class="_cell"></span>
+        <span class="_cell"></span>
+        <span class="_cell"></span>
+        <span class="_cell"></span>
+        <span class="_cell"></span>
+      </div>
     </div>
   </section>
   <section id="statusP2" class="index_status is_p2" aria-label="P2 血量與動力槽">
@@ -84,11 +91,29 @@
       <span class="_fill"></span>
       <span class="_wl"></span>
     </div>
-    <div class="index_status-dg js-gauge-dg" role="meter" aria-label="P2 動力槽" aria-valuemin="0" aria-valuemax="18000" aria-valuenow="18000">
-      <span class="_cell"></span>
-      <span class="_cell"></span>
-      <span class="_cell"></span>
+    <!-- DG 另一側：角色名字（hud.js setName）、AI 操作中的紅點（is_ai 時閃爍） -->
+    <div class="index_status-row">
+      <p class="index_status-info"><span class="_ai" title="AI 操作中"></span><span class="_name js-status-name"></span></p>
+      <div class="index_status-dg js-gauge-dg" role="meter" aria-label="P2 動力槽" aria-valuemin="0" aria-valuemax="30000" aria-valuenow="30000">
+        <span class="_cell"></span>
+        <span class="_cell"></span>
+        <span class="_cell"></span>
+        <span class="_cell"></span>
+        <span class="_cell"></span>
+      </div>
     </div>
+  </section>
+
+  <!-- 連段傷害（除錯）：畫面上方兩條血量中間；數值由 hud.js updateComboDebug 寫入 -->
+  <section id="comboDebug" class="index_comboDebug" aria-label="連段傷害">
+    <dl class="_col is_p1">
+      <dt>P1 連段傷害</dt><dd class="js-combo-damage">0</dd>
+      <dt>下一擊補正</dt><dd class="js-combo-scale">100%</dd>
+    </dl>
+    <dl class="_col is_p2">
+      <dt>P2 連段傷害</dt><dd class="js-combo-damage">0</dd>
+      <dt>下一擊補正</dt><dd class="js-combo-scale">100%</dd>
+    </dl>
   </section>
 
   <!-- 絕招量條（SG）：畫面下方，P1 左、P2 右；數字 = 已滿的格數 -->
@@ -107,6 +132,19 @@
       <span class="_cell"></span>
       <span class="_cell"></span>
     </div>
+  </section>
+
+  <!-- 升級牌（roguelike.js）：P2 被打倒時出現，點牌或按 1 / 2 / 3 選；牌由 JS 產生 -->
+  <section id="cardPick" class="index_cards" aria-labelledby="cardPickTitle" hidden>
+    <h2 id="cardPickTitle" class="index_cards-title js-cards-title"></h2>
+    <div class="index_cards-list js-cards-list"></div>
+  </section>
+
+  <!-- P1 被打倒的結算（roguelike.js gameOver）：止步層數 + 評價，按「重新開始」（或 Enter）從第 1 層重來 -->
+  <section id="gameOver" class="index_cards index_over" role="dialog" aria-modal="true" aria-labelledby="gameOverRank" hidden>
+    <p class="index_over-stage js-over-stage"></p>
+    <h2 id="gameOverRank" class="index_over-rank js-over-rank"></h2>
+    <button class="index_over-restart js-over-restart" type="button">重新開始</button>
   </section>
 
   <!--
@@ -132,17 +170,14 @@
               <kbd class="index_key is_d" data-key="KeyD"><b>D</b><small>右</small></kbd>
               <kbd class="index_key is_space" data-key="Space"><b>Space</b><small>跳</small></kbd>
             </div>
+            <!-- 數字鍵盤：7 8 9 拳、4 5 6 絕招欄位（名稱由 main.js _updateKeycaps 寫入，空格變暗）、0 衝刺取消 -->
             <div class="index_keys-pad">
               <kbd class="index_key is_light" data-key="Numpad7"><b>7</b><small>輕</small></kbd>
               <kbd class="index_key is_medium" data-key="Numpad8"><b>8</b><small>中</small></kbd>
               <kbd class="index_key is_heavy" data-key="Numpad9"><b>9</b><small>重</small></kbd>
-              <kbd class="index_key is_super" data-key="Numpad4"><b>4</b><small>dodge_step</small></kbd>
-              <kbd class="index_key is_super" data-key="Numpad5"><b>5</b><small>kick_ball</small></kbd>
-              <kbd class="index_key is_super" data-key="Numpad6"><b>6</b><small>wind_step</small></kbd>
-              <kbd class="index_key is_super" data-key="Numpad1"><b>1</b><small>dog_bear</small></kbd>
-              <kbd class="index_key is_super" data-key="Numpad2"><b>2</b><small>shake_head</small></kbd>
-              <!-- 3 鍵的招式由 GUI「招式選取」決定，名稱由 main.js _updateSuperKeyLabel 寫入 -->
-              <kbd class="index_key is_super" data-key="Numpad3"><b>3</b><small id="superKeyName"></small></kbd>
+              <kbd class="index_key is_super" data-key="Numpad4"><b>4</b><small></small></kbd>
+              <kbd class="index_key is_super" data-key="Numpad5"><b>5</b><small></small></kbd>
+              <kbd class="index_key is_super" data-key="Numpad6"><b>6</b><small></small></kbd>
               <kbd class="index_key is_rush is_wide" data-key="Numpad0"><b>0</b><small>衝刺取消</small></kbd>
             </div>
           </div>
@@ -154,8 +189,8 @@
             <dt>移動</dt><dd>A / D 左右走；W 或空白鍵跳</dd>
             <dt>防禦</dt><dd>往後走；後走 + S 原地防禦</dd>
             <dt>衝刺</dt><dd>AA / DD（空中也可以）</dd>
-            <dt>衝刺取消</dt><dd>前 + 0；拳打中或被防禦後按 0（空中也可以）；消耗 1 格 DG，不滿 1 格照樣能用但會產生虛血</dd>
-            <dt>絕招（SA）</dt><dd>消耗 1 格 SG，不滿 1 格不能用</dd>
+            <dt>衝刺取消</dt><dd>前 + 0；拳打中或被防禦後按 0（空中也可以）；消耗 3 格 DG，不足 3 格照樣能用但 DG 歸 0 並產生虛血</dd>
+            <dt>絕招（SA）</dt><dd>數字鍵盤 4 / 5 / 6（絕招欄位）；消耗 1 格 SG，不滿 1 格不能用；一開始只會閃身步，打倒對手後選牌學新的絕招，依序放進空的欄位</dd>
           </dl>
         </section>
 
@@ -165,7 +200,7 @@
             <dt>移動</dt><dd>WASD 跑（方向以鏡頭為準）；空白鍵跳</dd>
             <dt>快跑</dt><dd>按著左 Shift</dd>
             <dt>防禦</dt><dd>被打中時正往遠離對手的方向移動即防禦</dd>
-            <dt>衝刺取消</dt><dd>移動中按 0；拳打中或被防禦後按 0（空中也可以）；消耗 1 格 DG，不滿 1 格照樣能用但會產生虛血</dd>
+            <dt>衝刺取消</dt><dd>移動中按 0；拳打中或被防禦後按 0（空中也可以）；消耗 3 格 DG，不足 3 格照樣能用但 DG 歸 0 並產生虛血</dd>
             <dt>絕招（SA）</dt><dd>消耗 1 格 SG，不滿 1 格不能用</dd>
             <dt>C / V</dt><dd>鏡頭切換跟隨的人 / 鎖定對手</dd>
           </dl>
@@ -189,9 +224,10 @@
           <dt>M</dt><dd><span data-mode="fight">切換到自由模式</span><span data-mode="free">回到格鬥模式</span></dd>
           <dt>0（主鍵盤）</dt><dd>暫停</dd>
           <dt>- / =</dt><dd>遊戲速度</dd>
-          <dt>1 / 2 / 3</dt><dd>P1 / P2 / 全部 AI 開關</dd>
-          <dt>P</dt><dd>除錯顯示（座標、判定框、邊界牆）</dd>
-          <dt>O</dt><dd>幀數表</dd>
+          <dt>1 / 2（主鍵盤）</dt><dd>P1 / P2 AI 開關（AI 操作中，名字旁紅點閃爍）</dd>
+          <dt>4 ~ 9（主鍵盤）</dt><dd>直接出絕招（不用先學）：4 閃身步、5 浪子踢球、6 風擺柳碎布、7 狗熊哆嗦毛、8 搖頭晃腦、9 猴子繞花線</dd>
+          <dt>P</dt><dd>收合幀數表 + 連段傷害</dd>
+          <dt>O</dt><dd>除錯顯示（座標、判定框、邊界牆）</dd>
           <dt>X</dt><dd>被擋住時透視角色</dd>
           <dt>B</dt><dd>鏡頭避開物體</dd>
           <dt>H</dt><dd>環繞鏡頭</dd>

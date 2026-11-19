@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Gauge } from './gauge.js'
+import { KNOCK_DECAY } from './fighter.js'
 
 /**
  * Combat：格鬥模式與自由模式共用的戰鬥流程（每秒 60 幀推進一幀）
@@ -18,7 +19,7 @@ import { Gauge } from './gauge.js'
  *   aimAt(fighter, other)：穿越開始時對準對手（LineSpace 不需要）
  *   moveBy(fighter, step)：直接移動（穿越用），會擋牆 / 不出場地
  *   clampPassEnd(fighter, end)：穿越的終點限制在場地內
- *   resolvePush(fighters, { frozenOwner, prevPos })、checkWallBounce(fighters)、cornerPush(attacker, target)
+ *   resolvePush(fighters, { frozenOwner, prevPos })、checkWallBounce(fighters)、cornerPush(attacker, target, move)
  *   faceOpponents(p1, p2) → boolean（有人轉身）
  *   faceForSuper(fighter, opponent, key, isFromNeutral)
  *   stopAtOpponent(fighter, opponent, prevPos)：絕招凍結期間不推對手
@@ -36,19 +37,26 @@ export class Combat {
       dashBufferFrames: 5, // 前前 / 後後的最後幾幀內按會記住
       rushInputFrames: 8, // 衝刺取消鍵按下後記住幾幀
       knockdownSoundFrame: 30, // 被打飛後第幾幀播倒地音效
-      // 命中 / 被防禦時的血量與量條變化（點）：普通拳 × strength 倍率；SA 每個擊中判定只扣 superDamage 血
+      // 命中 / 被防禦時的血量與量條變化（點）：普通拳擊中扣 damage[招式] 血（空中重攻擊用 heavy）；SA 每個擊中判定只扣 superDamage 血
       gaugeRules: {
-        strength: { light: 1, medium: 1.5, heavy: 2, airHeavy: 2 },
-        hit: { damage: 100, dg: 600, oppDg: 0, sg: 300, oppSg: 100 },
-        block: { damage: 0, dg: 300, oppDg: -1200, sg: 150, oppSg: 100 },
+        damage: { light: 400, medium: 600, heavy: 800 },
+        // 連段補正：這招打中後，同一連段接下來的傷害再乘上這個倍率（累乘）；SA 吃目前的補正（最低 superMinScaling），但不再往下乘
+        scaling: { light: 0.8, medium: 0.85, heavy: 0.9 },
+        rushScaling: 0.9, // 衝刺取消：之後的傷害再乘上這個倍率（同一連段才有效，連段斷了下一擊重算）
+        minScaling: 0.1, // 補正最低到 10%
+        superMinScaling: 0.5, // SA 每一擊的補正最低 50%（只影響 SA 自己，之後的普通招式回到原本的補正）
+        // 擊中 / 被防禦的 DG、SG 增減改在 fighter.js 每招的 gauge 設定
         superDamage: 500,
+        // SA 削 DG：整招的第 1 下、最後 1 下（打中或被防禦都算）各扣對手 oppDg，對手 DG 停止回復 delay 幀；自己的 DG 不變
+        superDgBreak: { oppDg: -6000, delay: 180 },
       },
-      // 空中命中（被打的人在空中、不是打飛）：下墜速度倍率，維持到各自落地
-      airHitFallRate: { attacker: 0.5, target: 0.25 },
+      // 空中命中（被打的人在空中、不是打飛）：被打的人停在空中幾幀（垂直速度 0），之後正常下墜；攻擊方照常下墜
+      airHitHangFrames: 10,
       // 跟模式有關的處理（main.js 提供）
       hooks: {
         onHit: null, // (attacker, target, { move, isLaunch, isBlock, hitstop }) → 鏡頭晃動、命中鏡頭、受擊搖晃
         onCombo: null, // (slot, count)
+        onKO: null, // (slot) → 血量 0、死亡動畫播完倒地（見 _checkKO）
         onSuperStart: null, // (fighter, key) → 對手要凍結的幀數（自由模式）；格鬥模式開始演出、回傳 0
         isWaiting: null, // (fighter) → 絕招等鏡頭中，這幀不推進
       },
@@ -79,6 +87,10 @@ export class Combat {
     this.freeze = null // 自由模式的絕招凍結：{ fighter（放招的人）, frames }，另一名角色不動
     this.lock = null // 吸附 / 抓取中：{ attacker, target, offset, isGrab, lift, juggleHits, seg }
     this.combos = { p1: 0, p2: 0 }
+    this.koNotified = { p1: false, p2: false } // 這次倒地已經通知過 onKO
+    this.dgLock = null // 絕招第 1 下打中後鎖住對手 DG 回復：{ attacker, target, move }（見 _startDgLock）
+    // 連段傷害（攻擊方為準）：scale = 下一擊的補正倍率、damage = 這次連段總傷害、last = 上一擊實際傷害
+    this.comboStats = { p1: this._newComboStat(), p2: this._newComboStat() }
     this.gauges = { p1: new Gauge(), p2: new Gauge() } // 血量、動力槽、絕招量條、虛血
     this.wasDown = { p1: false, p2: false } // 上一幀倒地中（起身時回血用）
     this.prevPos = new Map() // 這幀推進前的位置（最遠距離判斷誰往外移動）
@@ -101,12 +113,18 @@ export class Combat {
     this.isRushFrozen = false
     this.freeze = null
     this.lock = null
+    this._endDgLock()
     this.input = { p1: this.newInputState(), p2: this.newInputState() }
     this.wasDown = { p1: false, p2: false }
     Object.keys(this.combos).forEach(slot => {
       this.combos[slot] = 0
+      this.comboStats[slot] = this._newComboStat()
       this.hooks.onCombo?.(slot, 0)
     })
+  }
+
+  _newComboStat() {
+    return { scale: 1, damage: 0, last: 0 }
   }
 
   /** 血量與量條回到初始值（重新開始、換人物時由 main.js 呼叫） */
@@ -148,6 +166,7 @@ export class Combat {
     const inputs = {}
     active.forEach(slot => { inputs[slot] = this._getInput(slot, raws[slot] || {}) })
     // SG 不滿 1 格：SA 鍵無效
+    // 還沒解鎖的招式（lockedMoves，roguelike.js）在按鍵端就擋掉：數字鍵盤絕招欄位只會出已學的招、AI 不挑沒學的；主鍵盤 4 ~ 9（除錯）不受限制
     active.forEach(slot => {
       if (f[slot].moves[inputs[slot].attack]?.isSuper && !this.gauges[slot].canSuper) inputs[slot].attack = null
     })
@@ -196,9 +215,12 @@ export class Combat {
     active.forEach(slot => {
       const fighter = f[slot]
       const st = this.input[slot]
-      // 衝刺取消開始（打中後、前 + 0、空中）：扣 1 格 DG
+      // 衝刺取消開始（打中後、前 + 0、空中）：扣 rushBars 格 DG（gauge.js）
       if (fighter.startedRush) {
         this.gauges[slot].useRush()
+        this.gauges[slot].pauseDgRegen(this.gauges[slot].rushDgDelay) // 衝刺取消開始起 rushDgDelay 幀不回復 DG
+        const stat = this.comboStats[slot]
+        stat.scale = Math.max(this.gaugeRules.minScaling, stat.scale * this.gaugeRules.rushScaling) // 衝刺取消補正
         fighter.startedRush = false
       }
       if (fighter.usedRush) {
@@ -221,6 +243,8 @@ export class Combat {
     this._updateBoxes()
     if (this.space.faceOpponents(f.p1, f.p2)) this._updateBoxes()
     this._checkHits()
+    this._updateDgLock()
+    this._checkKO()
     this._checkGetUp()
     this.frameMeter?.record([f.p1.getFrameType(), f.p2.getFrameType()])
 
@@ -463,6 +487,11 @@ export class Combat {
       this.space.prepareTarget(target, attacker)
       this.space.run(target, () => target.grab(grab.stunFrame), false)
       this.lock = { attacker, target, offset: grab.distance, isGrab: true }
+      // 絕招的抓取也算命中：削 DG、鎖住對手 DG 回復到最後 1 下
+      if (attacker.getCurrentMove()?.isSuper) {
+        this._superDgBreak(target)
+        this._startDgLock(attacker, target)
+      }
     })
   }
 
@@ -508,6 +537,7 @@ export class Combat {
   _checkHits() {
     this._pairs().forEach(([attacker, target]) => {
       const isLocked = this.lock?.attacker === attacker && this.lock.target === target && !this.lock.isGrab
+      if (target.isDying) return // 死亡動畫中無敵（吸附中也打不到）
       if (!(isLocked ? attacker.isHitActive() : attacker.checkHit(target))) return
 
       const move = this._getStunMove(attacker, target)
@@ -531,18 +561,16 @@ export class Combat {
       }
 
       const isCombo = target.state === 'hit' || target.isLaunched // 對手還在硬直中（含被打飛的飛走中）被打到 = 連段
+      if (!isCombo) this.comboStats[this._getSlot(attacker)] = this._newComboStat() // 新的連段：補正與總傷害重算
       const isLaunch = attacker.registerHit()
-      const isAirHit = target.isAirborne && !isLaunch && !target.isLaunched // 空中被普通攻擊打中：播飛走動畫、距離 = 擊退距離，雙方下墜變慢
+      const isAirHit = target.isAirborne && !isLaunch && !target.isLaunched // 空中被普通攻擊打中：播飛走動畫、距離 = 擊退距離，被打的人在空中停一下
       this.hitEffect.spawn(hitPoint, { type: move.isSuper || move.heavyHitEffect ? 'heavy' : 'hit', dir: hitDir })
       this.space.prepareTarget(target, attacker)
       this.space.run(target, () => target.takeHit(this.space.localX(target, attacker), move, isLaunch), false)
       attacker.onHitConfirm() // 衝刺取消、收招縮短、下一拳鏡像：防禦住的不算
-      if (isAirHit) {
-        target.slowFall(this.airHitFallRate.target)
-        attacker.slowFall(this.airHitFallRate.attacker)
-      }
+      if (isAirHit) target.hangInAir(this.airHitHangFrames) // 停在空中 airHitHangFrames 幀（往上的速度也歸 0），之後正常下墜
       this._applyGauges(attacker, target, false)
-      if (!isLaunch) this.space.cornerPush(attacker, target)
+      if (!isLaunch) this.space.cornerPush(attacker, target, move) // 對手背貼牆退不了：攻擊方往後退（含飛走中被追打）
       this.sound.play(move.isSuper ? 'superHit' : 'hit') // 受擊確認：受擊硬直第一幀
       // 絕招命中不頓幀，改成晃鏡頭
       this.hitstop = move.isSuper ? 0 : move.hitstop ?? this.hitstopFrames
@@ -577,31 +605,129 @@ export class Combat {
 
   /**
    * 命中 / 被防禦時的血量與量條變化（gaugeRules）
-   * 普通拳依 strength 倍率；SA 只有擊中時扣 superDamage 血；被擊中一律先結算虛血
+   * 普通拳擊中扣 damage[招式] 血（空中重攻擊跟著重攻擊）；DG / SG 照 hit / block 增減
+   * 不在 damage 表裡的招式不影響血量與量條；SA 只有擊中時扣 superDamage 血；被擊中一律先結算虛血
+   * 擊中的傷害乘上連段補正（comboStats.scale），打完再乘上這招的 scaling
    */
   _applyGauges(attacker, target, isBlock) {
     const self = this.gauges[this._getSlot(attacker)]
     const opp = this.gauges[this._getSlot(target)]
+    const stat = this.comboStats[this._getSlot(attacker)]
     const key = attacker.currentMove
     const rules = this.gaugeRules
-    if (attacker.moves[key]?.isSuper) {
-      if (!isBlock) opp.takeHit(rules.superDamage)
-      return
+    const hitFor = (damage, scaling = 1, minScale = 0) => {
+      // damageRate：攻擊方的傷害倍率（roguelike 升級）
+      const dealt = Math.round(damage * Math.max(minScale, stat.scale) * (attacker.damageRate ?? 1))
+      opp.takeHit(dealt)
+      stat.last = dealt
+      stat.damage += dealt
+      stat.scale = Math.max(rules.minScaling, stat.scale * scaling)
     }
-    const rate = rules.strength[key] ?? 0
-    const r = isBlock ? rules.block : rules.hit
-    if (!isBlock) opp.takeHit(r.damage * rate)
-    self.addDg(r.dg * rate)
-    opp.addDg(r.oppDg * rate)
-    self.addSg(r.sg * rate)
-    opp.addSg(r.oppSg * rate)
+    // SA 跟普通招式分開算：每一擊最少吃 superMinScaling 的補正，打完補正維持原樣（不往下乘、也不被拉高）
+    const move = attacker.moves[key]
+    if (!isBlock) {
+      if (move?.isSuper) {
+        hitFor(this._getSuperHitDamage(move, attacker), 1, rules.superMinScaling)
+      } else {
+        const baseKey = key === 'airHeavy' ? 'heavy' : key
+        const damage = rules.damage[baseKey]
+        if (damage !== undefined) hitFor(damage, rules.scaling[baseKey] ?? 1)
+      }
+    }
+    // 量條增減：招式自己的 gauge.hit / gauge.block（fighter.js moves），沒填 = 不變
+    const g = move?.gauge?.[isBlock ? 'block' : 'hit']
+    if (g) {
+      self.addDg(g.dg ?? 0)
+      opp.addDg(g.oppDg ?? 0)
+      self.addSg(g.sg ?? 0)
+      opp.addSg(g.oppSg ?? 0)
+    }
+    // 防禦成功：防禦方的 DG 停止回復 blockDgDelay 幀
+    if (isBlock) opp.pauseDgRegen(opp.blockDgDelay)
+    // SA 削 DG：不管打中或被防禦，只有整招的第 1 下和最後 1 下各扣對手 superDgBreak.oppDg，對手 DG 停止回復 superDgBreak.delay 幀
+    //   （單段的絕招第 1 下就是最後 1 下，只算一次；扣到 0 以下的部分照防禦溢出換成虛血）
+    if (!move?.isSuper) return
+    const isFirst = attacker.isFirstHit()
+    const isLast = attacker.isLastHit()
+    if (isFirst || isLast) this._superDgBreak(target)
+    // 第 1 下打中（不是被防禦）：到最後 1 下之前對手 DG 完全不回復（見 _updateDgLock）
+    if (isFirst && !isBlock && !isLast) this._startDgLock(attacker, target)
+    if (isLast) this._endDgLock(attacker)
   }
 
-  /** 被打倒後起身（倒地狀態結束）：血量 0 的人回滿血 */
+  /** SA 削 DG：對手扣 superDgBreak.oppDg，之後 superDgBreak.delay 幀不回復 */
+  _superDgBreak(target) {
+    const dgBreak = this.gaugeRules.superDgBreak
+    if (!dgBreak) return
+    const opp = this.gauges[this._getSlot(target)]
+    opp.addDg(dgBreak.oppDg)
+    opp.pauseDgRegen(dgBreak.delay)
+  }
+
+  /** 絕招第 1 下打中 / 抓到：對手 DG 鎖住不回復，直到這招最後 1 下（或這招結束） */
+  _startDgLock(attacker, target) {
+    this.dgLock = { attacker, target, move: attacker.currentMove }
+    this.gauges[this._getSlot(target)].dgLocked = true
+  }
+
+  _endDgLock(attacker) {
+    if (!this.dgLock || (attacker && this.dgLock.attacker !== attacker)) return
+    this.gauges[this._getSlot(this.dgLock.target)].dgLocked = false
+    this.dgLock = null
+  }
+
+  /** 放招的人已經不在出這招（被打斷、招式結束、沒打到最後 1 下）：解除 DG 鎖 */
+  _updateDgLock() {
+    const lock = this.dgLock
+    if (!lock) return
+    if (lock.attacker.state !== 'attack' || lock.attacker.currentMove !== lock.move) this._endDgLock()
+  }
+
+  /**
+   * 絕招目前這一段（attacker.hitWindow，0 起算）的傷害：hitDamages[段] → hitDamage → gaugeRules.superDamage，再扣 repeatOnHit.damageCut
+   * hitDamages 裡寫 -1（或沒寫到那一段）就用通用的 hitDamage
+   */
+  _getSuperHitDamage(move, attacker) {
+    // repeatOnHit.lastDamage：最後一次（重複到最後一次的最後一段）固定這個傷害
+    const repeat = move.repeatOnHit
+    if (repeat?.lastDamage != null && attacker.isLastHit()) return repeat.lastDamage
+    const own = move.hitDamages?.[attacker.hitWindow]
+    const damage = own !== undefined && own >= 0 ? own : move.hitDamage ?? this.gaugeRules.superDamage
+    // repeatOnHit.damageCut：第 after 次之後（升級多出來的次數），每多一次傷害少 step，最多少 max
+    const cut = move.repeatOnHit?.damageCut
+    const extra = cut ? Math.max(0, (attacker.passCount ?? 1) - cut.after) : 0
+    return Math.max(0, damage - Math.min(cut?.max ?? 0, extra * (cut?.step ?? 0)))
+  }
+
+  /**
+   * 血量 0、連段結束 → 死亡（startDeath）：
+   * - 被打飛：飛走動畫照常播（飛走中還能被追打、繼續連段），播完倒地、原本要起身時接 flyDeath
+   * - 受擊 / 防禦硬直結束、回到可行動：播站著死
+   * - 還在受擊硬直中（連段中）就繼續挨打，等連段結束
+   * 死亡動畫期間無敵；播完倒地後通知一次 hooks.onKO(slot)（roguelike 出牌）
+   */
+  _checkKO() {
+    Object.entries(this.fighters).forEach(([slot, fighter]) => {
+      if (!fighter.isDying) this.koNotified[slot] = false
+      if (this.gauges[slot].hp <= 0 && !fighter.isDying && (fighter.isFlyDone || fighter.canAct)) {
+        fighter.startDeath()
+        if (this.lock?.target === fighter) this.lock = null // 死了就放開吸附 / 抓取
+      }
+      if (fighter.isDeathDone && !this.koNotified[slot]) {
+        this.koNotified[slot] = true
+        this.hooks.onKO?.(slot)
+      }
+    })
+  }
+
+  /**
+   * 被打倒後起身（倒地狀態結束）：血量 0 的人回滿血
+   * 轉成死亡（down → dead）不算起身，血量維持 0（下一層的血量由 main.js 選完牌後處理）
+   */
   _checkGetUp() {
     Object.entries(this.fighters).forEach(([slot, fighter]) => {
       const isDown = fighter.state === 'down'
-      if (this.wasDown[slot] && !isDown) this.gauges[slot].onGetUp()
+      if (this.wasDown[slot] && !isDown && !fighter.isDying) this.gauges[slot].onGetUp()
       this.wasDown[slot] = isDown
     })
   }
@@ -781,17 +907,24 @@ export class LineSpace {
   }
 
   /**
-   * 邊界推擠：對手的擊退距離超過到邊界的空間時，超出的部分改成攻擊方往後退
-   * 擊退速度每秒衰減 e^-8，總距離約 = 初速 / 8
+   * 邊界推擠：對手的擊退距離超過到邊界的空間時，超出的部分改成攻擊方往後退（不然在牆角可以無限打）
+   * - 站著受擊 / 防禦：擊退速度每秒衰減 e^-KNOCK_DECAY，總距離約 = 初速 / KNOCK_DECAY（= 招式的 knockback）
+   * - 飛走中受擊（空中被打、追打飛走中的人）：往 flyDir 飛 knockback 公尺
    */
-  cornerPush(attacker, target) {
-    const v = target.knockVelocity
-    if (!v) return
-    const dir = Math.sign(v)
+  cornerPush(attacker, target, move) {
+    let dir = 0
+    let distance = 0
+    if (target.knockVelocity) {
+      dir = Math.sign(target.knockVelocity)
+      distance = Math.abs(target.knockVelocity) / KNOCK_DECAY
+    } else if (target.state === 'down' && move?.knockback) {
+      dir = target.flyDir
+      distance = Math.abs(move.knockback)
+    }
+    if (!dir || !distance) return
     const wall = dir * (this.getHalfWidth() - target.pushHalfWidth)
     const room = Math.max(0, (wall - target.x) * dir)
-    const distance = Math.abs(v) / 8
     if (distance <= room) return
-    attacker.pushVelocity = -dir * (distance - room) * 8
+    attacker.pushVelocity = -dir * (distance - room) * KNOCK_DECAY
   }
 }

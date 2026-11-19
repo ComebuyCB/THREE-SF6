@@ -22,7 +22,7 @@ const DOWN = new THREE.Vector3(0, -1, 0)
  * - 衝刺取消：移動中按 0 = 往移動方向衝刺取消（同格鬥模式的「前 + 0」）；沒在移動只按 0 沒反應
  *   衝刺取消的動作換成 dashStyle.anim（FastRun）
  * - 絕招沒有鏡頭演出：從動畫開頭直接播，原本演出凍結的幀數另一名角色凍結不動（Combat.freeze）
- * - 招式有 aimOpponent（例如風擺柳碎布）：放招時朝向對手；穿越（閃身步）每次穿越開始時對準對手
+ * - 招式有 aimOpponent（例如風擺柳碎步）：放招時朝向對手；穿越（閃身步）每次穿越開始時對準對手
  *
  * AI：離對手 aiFight.engageDistance 內用格鬥模式的 AI（ai.js，對手換算到自己的方向上），遠的時候隨意走動，
  *     每段有 chaseRate 的機率追對手，撞到東西換方向
