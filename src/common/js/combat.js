@@ -108,6 +108,9 @@ export class Combat {
    * 推進完由呼叫端記錄畫面補間的這一幀（captureFrame）
    */
   step(raws, active = ['p1', 'p2']) {
+    // AI 按的出招 / 衝刺取消鍵先記住：頓幀、絕招凍結時這一幀會提早結束，不記的話會被丟掉（AI 連段就是在命中頓幀中按下一招）
+    active.forEach(slot => this._keepRaw(slot, raws[slot]))
+
     // 頓幀：雙方動畫、移動與幀數表都暫停
     if (this.hitstop > 0) {
       this.hitstop--
@@ -266,6 +269,13 @@ export class Combat {
     })
   }
 
+  /** 原始輸入裡按一下的鍵（AI 的出招、衝刺取消）存進輸入狀態，等真的推進時由 _getInput 取用 */
+  _keepRaw(slot, raw) {
+    const st = this.input[slot]
+    if (raw?.attack) st.pendingAttack = raw.attack
+    if (raw?.rush) st.rushLife = this.rushInputFrames
+  }
+
   /**
    * 一個玩家這一幀的輸入（格式見 Fighter.update）
    * AI 按的招式 / 衝刺取消鍵、鍵盤按的（main.js 寫進 this.input）都經過同一套預約 / 記憶流程
@@ -273,9 +283,6 @@ export class Combat {
   _getInput(slot, raw) {
     const fighter = this.fighters[slot]
     const st = this.input[slot]
-    if (raw.attack) st.pendingAttack = raw.attack
-    if (raw.rush) st.rushLife = this.rushInputFrames
-
     const attack = this._bufferAttack(fighter, st.pendingAttack, st)
     const rush = st.rushLife > 0
     if (st.rushLife > 0) st.rushLife--
