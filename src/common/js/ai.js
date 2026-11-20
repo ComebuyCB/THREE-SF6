@@ -12,7 +12,7 @@ const COMBOS = [
   ['heavy', 'rush', 'heavy', 'medium', 'rush', 'medium', 'light', 'rush', 'light', 'light', 'light', 'super'],
   ['medium', 'medium', 'rush', 'medium', 'medium', 'rush', 'heavy', 'medium', 'super'],
   ['light', 'light', 'light', 'rush', 'light', 'light', 'light', 'super'],
-  ['light', 'light', 'rush', 'light', 'medium', 'rush', 'medium', 'heavy', 'rush', 'medium', 'light', 'super'],
+  ['light', 'light', 'rush', 'light', 'medium', 'rush', 'medium', 'heavy', 'super'],
 ]
 
 /**
@@ -40,10 +40,15 @@ const COMBOS = [
  */
 const WINDOWS = { light: [0, 1.4], medium: [1.4, 1.6], heavy: [1.6, 1.8] }
 export const AI_LEVELS = {
-  easy: { name: '簡單', comboDropRate: 0.2 },
+  easy: {
+    name: '簡單',
+    comboDropRate: 0.25,
+    guardRate: 0.5,
+    reaction: [10, 18]
+  },
   normal: { name: '中等' },
   hard: {
-    name: '困難',
+    name: '進階',
     guardRate: 0.8,
     reaction: [6, 12],
     attackWindows: WINDOWS,
@@ -52,8 +57,8 @@ export const AI_LEVELS = {
     gaugeAware: true,
   },
   expert: {
-    name: '極難',
-    guardRate: 0.9,
+    name: '困難',
+    guardRate: 0.95,
     reaction: [4, 8],
     attackWindows: WINDOWS,
     whiffPunish: true,
