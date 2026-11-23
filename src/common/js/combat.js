@@ -487,6 +487,7 @@ export class Combat {
       this.space.prepareTarget(target, attacker)
       this.space.run(target, () => target.grab(grab.stunFrame), false)
       this.lock = { attacker, target, offset: grab.distance, isGrab: true }
+      attacker.hasGrabbed = true // missCut（judge: 'grab'）：抓到了就不跳過
       // 絕招的抓取也算命中：削 DG、鎖住對手 DG 回復到最後 1 下
       if (attacker.getCurrentMove()?.isSuper) {
         this._superDgBreak(target)
@@ -563,10 +564,12 @@ export class Combat {
       const isCombo = target.state === 'hit' || target.isLaunched // 對手還在硬直中（含被打飛的飛走中）被打到 = 連段
       if (!isCombo) this.comboStats[this._getSlot(attacker)] = this._newComboStat() // 新的連段：補正與總傷害重算
       const isLaunch = attacker.registerHit()
-      const isAirHit = target.isAirborne && !isLaunch && !target.isLaunched // 空中被普通攻擊打中：播飛走動畫、距離 = 擊退距離，被打的人在空中停一下
+      // 吸附招式（lock）的第 1 下：不管對手在空中、飛走中，一律強制站立受擊，才能吸住打完整招
+      const isForceStand = !!move.lock && !isLaunch && !this.lock
+      const isAirHit = !isForceStand && target.isAirborne && !isLaunch && !target.isLaunched // 空中被普通攻擊打中：播飛走動畫、距離 = 擊退距離，被打的人在空中停一下
       this.hitEffect.spawn(hitPoint, { type: move.isSuper || move.heavyHitEffect ? 'heavy' : 'hit', dir: hitDir })
       this.space.prepareTarget(target, attacker)
-      this.space.run(target, () => target.takeHit(this.space.localX(target, attacker), move, isLaunch), false)
+      this.space.run(target, () => target.takeHit(this.space.localX(target, attacker), move, isLaunch, isForceStand), false)
       attacker.onHitConfirm() // 衝刺取消、收招縮短、下一拳鏡像：防禦住的不算
       if (isAirHit) target.hangInAir(this.airHitHangFrames) // 停在空中 airHitHangFrames 幀（往上的速度也歸 0），之後正常下墜
       this._applyGauges(attacker, target, false)
@@ -757,6 +760,12 @@ export class Combat {
   /** 招式音效：第 2 幀以後在這裡播（第 1 幀在出招時播，避免定格那幀重複） */
   _playStepSounds(fighters) {
     fighters.forEach(f => {
+      // missCut：揮空後第 soundAfter + 1 幀，停掉這招還在播的音效（之後排定的音效照幀數播）
+      if (f.missSoundCutNow) {
+        f.missSoundCutNow = false
+        this.sound.stopGroup(f)
+        f.soundMove = null
+      }
       this._checkSoundCut(f)
       const move = f.getCurrentMove()
       const frame = f.moveFrame

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh'
+import { KNOCK_DECAY } from './fighter.js'
 
 const DOWN = new THREE.Vector3(0, -1, 0)
 
@@ -8,27 +9,44 @@ const DOWN = new THREE.Vector3(0, -1, 0)
  *
  * 移動（自由狀態，由這裡控制）：
  * - 方向以鏡頭為準：P1 W / A / S / D、P2 ↑ / ← / ↓ / →；人物轉向移動方向，播跑步動畫（run）
- * - 碰撞只擋牆：往移動方向發射線，碰到場景就沿著牆滑開；地面維持 y = 0（不跟地形高低）
+ * - 碰撞擋牆：往移動方向發射線（高度從腳底算），碰到場景就沿著牆滑開
+ * - 地面跟著場景高低（斜坡、台階、平台）：每個畫面從腳底上方 floor.stepUp 往下找場景，人物的 groundY 換成那個高度
+ *   比腳底高超過 stepUp 的當成牆（爬不上去，要跳上去）；比腳底低超過 stepDown（走出平台邊緣）就從當下高度落下
+ *   跳躍 / 落下時看腳下的場景：落到比起跳處高的平台上就站在上面（Fighter.getFloor）
+ *   格鬥模式不受影響（groundY 固定 0）
  * - 留在場景內：腳下（往前一點）往下沒有場景模型 = 場景邊緣，擋住不能走出去；沒有場景時限制在 |x|、|z| ≤ bounds 的方框內
  * - 推擠框跟著人物走：兩人重疊時各退一半
  *
  * 戰鬥（交給 Combat，空間規則是本檔的 PlaneSpace）：
  * - Fighter 的格鬥邏輯只看 x：每個人有自己的方向 dir（格鬥邏輯的 +x），x 的變化換成沿著 dir 移動，也會被牆擋住
  * - 出招、衝刺取消（0）、跳躍（P1 空白鍵）、衝刺、受擊 / 防禦硬直期間由格鬥邏輯控制，能自由行動且沒有要做的事就交還給自由移動
- * - 出招朝自己面向；被打中的人轉向攻擊方，擊退 / 擊飛沿著攻擊方的方向；被擊飛撞到場景物體就反彈（launch.wallBounce）
+ * - 出招朝自己面向（移動中 = 移動方向）；這個方向前方 attackAssist.angle 度、attackAssist.range 公尺內有對手時，出招當下自動轉向對手
+ * - 被打中的人轉向攻擊方，擊退 / 擊飛沿著攻擊方的方向；被擊飛撞到場景物體就反彈（launch.wallBounce）
  * - 防禦：不用另外按，攻擊打中的那一幀如果正往離開對手的方向移動（跟「朝對手」的夾角 90° 以上）就擋住（防禦動畫、防禦硬直）
  *   平常照常跑，不會因為要防禦而被卡住；GUI「P2 木樁防禦」打開時 P2 原地防禦
+ * - 空中操控：跳躍的浮空狀態（state 'air'）按方向鍵，人物轉向那個方向、水平速度往斜跳速度靠近；放開維持當下的速度
+ *   空中出招、空中衝刺、被打飛 / 受擊都不受影響
+ * - 快跑跳：按著 sprint 鍵跳躍（含空中操控）水平速度 = 快跑速度（runSpeed × sprintRate），沒按 = 一般斜跳速度
  * - 快跑：按著 sprint 鍵（P1 左 Shift、P2 右 Shift）跑步速度 × sprintRate、改播 dashStyle.anim（FastRun），沒有幀數限制
  * - 衝刺取消：移動中按 0 = 往移動方向衝刺取消（同格鬥模式的「前 + 0」）；沒在移動只按 0 沒反應
+ *   衝刺方向前方 rushAssist.angle 度、rushAssist.range 公尺內有對手時，衝刺途中一直對準對手，停在對手面前（不會擦邊跨過去）
  *   衝刺取消的動作換成 dashStyle.anim（FastRun）
  * - 絕招沒有鏡頭演出：從動畫開頭直接播，原本演出凍結的幀數另一名角色凍結不動（Combat.freeze）
+ * - 坐下（sitDown / standUp，main.js 按 F 時呼叫）：sitAnims.down 倒著播 → sitAnims.idle 循環；再按一次 sitAnims.down 正著播 → 回到自由移動
+ *   坐著（含坐下、起身途中）不能移動、出招；被打中就直接中斷
  * - 招式有 aimOpponent（例如風擺柳碎步）：放招時朝向對手；穿越（閃身步）每次穿越開始時對準對手
  *
- * AI：離對手 aiFight.engageDistance 內用格鬥模式的 AI（ai.js，對手換算到自己的方向上），遠的時候隨意走動，
- *     每段有 chaseRate 的機率追對手，撞到東西換方向
+ * AI：靠視野索敵（aiSight）：面向左右各 angle 度、range 公尺內，而且中間沒有場景擋住，才算看到對手
+ *     看到（或剛被打）→ 追過去，離對手 aiFight.engageDistance 內改用格鬥模式的 AI（ai.js，對手換算到自己的方向上）
+ *     沒看到超過 memory 秒 → 忘掉，回到隨意走動（撞到東西換方向）；追的路上被牆擋住也會放棄
  *
- * 鏡頭：跟著 P1（C 切換 P1 / P2，注視點平滑移過去），距離與角度不變，滑鼠照常轉動 / 縮放
- *   進入時平滑轉成俯角 enterPitch 度、距離拉遠成 enterZoom 倍；V 鎖定對手（滑鼠左鍵拖曳時解除）
+ * 鏡頭：跟著 P1（C 切換 P1 / P2，注視點平滑移過去），距離不變，滾輪縮放
+ *   滑鼠游標隱藏（main.js 鎖定滑鼠），移動滑鼠 = 繞著人物轉鏡頭（addLook）；滑鼠中鍵鎖定對手，鎖定中按任何滑鼠鍵回到一般鏡頭
+ *   進入時平滑轉成俯角 enterPitch 度、距離拉遠成 enterZoom 倍
+ *   跟隨的人被攻擊（打中或被防禦）時，鏡頭平滑轉向攻擊方（faceAttacker，hitTurn）；轉的途中移動滑鼠就停止
+ * 第一人稱（N，toggleFirstPerson）：鏡頭放在跟隨的人頭的位置（身體照常顯示，只有頭在渲染時縮到看不見），滑鼠轉視角，人物一直面向視角方向
+ *   W / S / A / D = 往前跑 / 往後走 / 往左右側走（後走、側走用 walk 動作與 firstPerson 的速度倍率）
+ *   只有按著後（S）才算防禦；出招、跳躍、衝刺取消朝視角方向（S 跳 = 往後跳）；鎖定對手時視角轉向對手
  *
  * 場景模型很大，射線用 three-mesh-bvh 加速（第一次進自由模式時替場景網格建 BVH，之後沿用）
  */
@@ -44,22 +62,43 @@ export class FreeMode {
       turnSpeed: 12, // 轉向速度：越大轉越快
       radius: 0.3, // 人物擋牆半徑（公尺）
       rayHeights: [0.4, 1.2], // 擋牆射線的高度（公尺）：膝蓋、胸口
-      groundRay: { from: 3, length: 6 }, // 場景邊緣偵測：從多高（公尺）往下找地面、找多遠
+      groundRay: { from: 3, length: 6 }, // 場景邊緣偵測：從腳底上方多高（公尺）往下找地面、找多遠
+      // 地面高度：stepUp = 走路能直接踩上去的高度差（從腳底上方這麼高往下找地板），stepDown = 往下超過這個高度差就落下，
+      // far = 往下找多遠，cameraSpeed = 鏡頭高度跟上地面高度的快慢
+      floor: { stepUp: 0.35, stepDown: 0.4, far: 30, cameraSpeed: 8 },
       followHeight: 1, // 鏡頭注視點在人物腳底上方多高（公尺）
       switchTime: 0.6, // C 切換跟隨的人：注視點移過去的秒數
       enterPitch: 30, // 進入自由模式時的鏡頭俯角（度）
       enterZoom: 2, // 進入自由模式時鏡頭距離 × 這個倍率（稍微拉遠）
       enterTime: 0.6, // 進入自由模式時鏡頭轉過去的秒數
       lockOnTurnSpeed: 6, // 鎖定對手時鏡頭轉過去的速度：越大越快
+      lookSpeed: 0.0025, // 滑鼠轉鏡頭：每移動 1 像素轉幾弧度
+      // 被攻擊時鏡頭轉向攻擊方：speed = 轉向速度（越大越快，每秒靠近剩餘角度的比例），time = 最多轉幾秒
+      hitTurn: { speed: 3, time: 1.2 },
+      pitchRange: [0.15, 1.6], // 第三人稱鏡頭的垂直角度範圍（弧度，0 = 正上方、π/2 = 水平）
+      // 第一人稱：鏡頭 = Head 骨頭往上 eyeUp、往視角方向 eyeForward 公尺（沒有 Head 骨頭時用身高 × eyeRate）
+      //   maxPitch = 上下最多看幾弧度，startPitch = 打開第一人稱時的視角（度，負數 = 往下看），back / side = 後走、側走的速度倍率（相對跑步）
+      firstPerson: { eyeUp: 0.08, eyeForward: 0.03, eyeRate: 0.93, maxPitch: 1.3, startPitch: -10, back: 0.5, side: 0.7 },
       fps: 60, // 格鬥邏輯的幀率（同 fighter.js）
       overheadRate: 0.8, // 高度差超過身高的這個比例就不推擠（越過頭頂）
       dashStyle: { anim: 'fastRun', speedRate: 2 }, // 自由模式的衝刺：動作、位移倍率（相對格鬥模式）
+      // 坐下：down = 起身動作（坐下時倒著播、起身時正著播），idle = 坐著循環
+      sitAnims: { down: 'standUp', idle: 'sitIdle' },
       sprintRate: 2, // 快跑：跑步速度倍率
       jumpSpeedRate: 2, // 自由模式斜跳的水平速度倍率（相對格鬥模式；跳的高度、滯空時間不變）
+      // 空中操控（只在跳躍的浮空狀態）：turnSpeed = 轉向速度（弧度 / 秒），accel = 水平速度靠近目標的快慢（越大越快）
+      airControl: { turnSpeed: 10, accel: 8 },
+      // 出招自動面向對手：出招方向（移動中 = 移動方向，沒在移動 = 面向）左右各 angle 度內、range 公尺內有對手時，出招當下轉向對手
+      attackAssist: { angle: 60, range: 3 },
+      // 衝刺取消追蹤對手：衝刺開始時對手在衝刺方向左右各 angle 度、range 公尺內 → 衝刺中一直轉向對手，
+      // 停在兩人推擠框相貼再隔 gap 公尺的位置（之後的出招打得到）
+      rushAssist: { angle: 60, range: 6, gap: 0.1 },
       // AI 隨意走動：每段跑多久、停多久（秒，範圍內隨機）
       wander: { moveTime: [1, 3], idleTime: [0.5, 2] },
-      // AI 打架：遠的時候每段移動有 chaseRate 的機率追對手；離對手 engageDistance 公尺內改用格鬥模式的 AI
-      aiFight: { chaseRate: 0.1, engageDistance: 5 },
+      // AI 打架：看到對手（aiSight）且離對手 engageDistance 公尺內，改用格鬥模式的 AI
+      aiFight: { engageDistance: 5 },
+      // AI 視野：面向左右各 angle 度、range 公尺內、視線（eyeHeight 高）沒被場景擋住才看得到；看不到 memory 秒後忘掉對手
+      aiSight: { angle: 60, range: 15, eyeHeight: 1.4, memory: 2 },
       keys: {
         p1: { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space', sprint: 'ShiftLeft' },
         p2: { forward: 'ArrowUp', back: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', sprint: 'ShiftRight' },
@@ -89,10 +128,16 @@ export class FreeMode {
     this.followSlot = 'p1' // 鏡頭跟著誰
     this.followBlend = null // 切換跟隨中：{ from（注視點起點）, t（0 ~ 1） }
     this.offsetBlend = null // 進入時的鏡頭轉向：{ from, to（鏡頭相對注視點的位置）, t }
-    this.isLockOn = false // V：鏡頭鎖定對手
+    this.isLockOn = false // 滑鼠中鍵：鏡頭鎖定對手
+    this.attackerTurn = null // 被攻擊後轉向攻擊方中：{ other, time }
+    this.look = { dx: 0, dy: 0 } // 這個畫面累積的滑鼠移動（像素），_updateCamera 用掉
+    this.isFirstPerson = false // N：第一人稱
+    // 第一人稱的視角（yaw 同人物 rotation.y、pitch 往上為正）；distance / height = 切回第三人稱時鏡頭的距離與仰角（sin）
+    this.fp = { yaw: 0, pitch: 0, distance: 3, height: 0.6 }
     this.interpolated = [] // 這個畫面做了補間的人（渲染後還原）
     this.raycaster = new THREE.Raycaster()
     this.raycaster.firstHitOnly = true
+    this.cameraGroundY = 0 // 鏡頭注視點跟著的地面高度（平滑跟上跟隨的人的 groundY）
     this.forward = new THREE.Vector3()
     this.right = new THREE.Vector3()
     this.input = new THREE.Vector3()
@@ -113,11 +158,17 @@ export class FreeMode {
       localRot: Math.PI / 2,
       isEngine: false,
       isJumpHeld: false,
-      wander: { dir: new THREE.Vector3(), time: 0, isMoving: false, isChasing: false },
+      wander: { dir: new THREE.Vector3(), time: 0, isMoving: false },
+      lostTime: Infinity, // AI：多久沒看到對手（秒）；memory 內 = 還記得、會追
+      sit: null, // 坐下中：{ phase: 'down' | 'idle' | 'up' }
     }]))
     this.accumulator = 0
     this.setEnv(env)
     Object.values(fighters).forEach(f => {
+      // 地面高度跟著場景：先站到腳下的地板上，跳躍 / 落下時落在場景上
+      f.getFloor = fighter => this._getFloor(fighter.model.position)
+      f.groundY = 0
+      this._followGround(f, true)
       f.isFreeFacing = true
       f.isGuarding = false
       f.dashStyle = this.dashStyle
@@ -127,6 +178,7 @@ export class FreeMode {
 
     // 鏡頭：注視點平滑移到 P1，角度轉成俯角 enterPitch、距離拉遠成 enterZoom 倍（水平方向不變）
     this.followSlot = 'p1'
+    this.cameraGroundY = fighters.p1.groundY
     this.followBlend = { from: this.controls.target.clone(), t: 0 }
     const offset = this.camera.position.clone().sub(this.controls.target)
     const dist = offset.length() * this.enterZoom
@@ -139,7 +191,11 @@ export class FreeMode {
   }
 
   exit() {
+    if (this.isFirstPerson) this.toggleFirstPerson()
     Object.values(this.fighters).forEach(f => {
+      // 回到格鬥模式：地面 y = 0（main.js 接著 resetAll 讓人物站回地面）
+      f.getFloor = null
+      f.groundY = 0
       f.isFreeFacing = false
       f.dashStyle = null
       f.jumpSpeedRate = 1
@@ -157,7 +213,52 @@ export class FreeMode {
     if (env) this._buildBVH(env)
   }
 
-  /** V：鏡頭鎖定對手（再按一次解除）：鏡頭水平轉到跟隨的人背後，畫面朝向對手 */
+  /** 滑鼠移動（鎖定滑鼠時，main.js 呼叫）：累積起來，下一次 _updateCamera 轉鏡頭 */
+  addLook(dx, dy) {
+    if (!this.isActive) return
+    this.look.dx += dx
+    this.look.dy += dy
+  }
+
+  /**
+   * N：第一人稱開關
+   * 打開：視角 = 目前鏡頭的水平方向，隱藏跟隨的人的模型；關閉：鏡頭回到人物背後（距離、仰角同打開前），模型顯示
+   */
+  toggleFirstPerson() {
+    if (!this.isActive && !this.isFirstPerson) return
+    const fighter = this.fighters[this.followSlot]
+    this.isFirstPerson = !this.isFirstPerson
+    this.offsetBlend = null
+    this.followBlend = null
+    this.controls.enableZoom = !this.isFirstPerson
+    if (this.isFirstPerson) {
+      const offset = this.camera.position.clone().sub(this.controls.target)
+      const length = offset.length() || 3
+      this.fp.distance = length
+      this.fp.height = offset.y / length
+      this.fp.yaw = Math.atan2(-offset.x, -offset.z) // 看的方向 = 鏡頭 → 注視點
+      this.fp.pitch = THREE.MathUtils.degToRad(this.firstPerson.startPitch) // 預設稍微往下看
+      return
+    }
+    if (!fighter) return
+    // 回到第三人稱：鏡頭放在人物背後（視角方向的反方向）
+    const { distance, height } = this.fp
+    const flat = Math.sqrt(Math.max(0, 1 - height * height)) * distance
+    const target = fighter.model.position.clone().setY(this.cameraGroundY + this.followHeight)
+    this.controls.target.copy(target)
+    this.camera.position.set(target.x - Math.sin(this.fp.yaw) * flat, target.y + height * distance, target.z - Math.cos(this.fp.yaw) * flat)
+  }
+
+  /**
+   * 被攻擊時（main.js 的 onHit，打中或被防禦）：跟隨的人是被打的那個，就讓鏡頭平滑轉向攻擊方
+   * 鎖定對手中不用轉（本來就看著）；轉到角度差很小、超過 hitTurn.time 秒或移動滑鼠時停止
+   */
+  faceAttacker(attacker, target) {
+    if (!this.isActive || this.isLockOn || target !== this.fighters[this.followSlot]) return
+    this.attackerTurn = { other: attacker, time: this.hitTurn.time }
+  }
+
+  /** 滑鼠中鍵：鏡頭鎖定對手（再按一次解除）：鏡頭水平轉到跟隨的人背後，畫面朝向對手 */
   toggleLockOn() {
     this.setLockOn(!this.isLockOn)
   }
@@ -169,11 +270,43 @@ export class FreeMode {
     this.offsetBlend = null
   }
 
-  /** C：鏡頭改跟另一個人（注視點平滑移過去，距離、角度不變） */
+  /** C：鏡頭改跟另一個人（注視點平滑移過去，距離、角度不變；第一人稱時換成那個人的眼睛） */
   switchFollow() {
     if (!this.isActive) return
     this.followSlot = this.followSlot === 'p1' ? 'p2' : 'p1'
     this.followBlend = { from: this.controls.target.clone(), t: 0 }
+  }
+
+  /** 是否坐著（含坐下、起身途中） */
+  isSitting(slot) {
+    return !!this.states[slot]?.sit
+  }
+
+  /**
+   * 坐下：轉向 lookAt（世界座標，例如營火）後播坐下動作；正在自由移動、能行動時才可以
+   * @returns {boolean} 有沒有坐下
+   */
+  sitDown(slot, lookAt) {
+    const fighter = this.fighters[slot]
+    const st = this.states[slot]
+    if (!this.isActive || !fighter || st.sit || st.isEngine || !fighter.canAct) return false
+    if (!fighter.playPose(this.sitAnims.down, { reverse: true, isOnce: true })) return false
+    if (lookAt) {
+      const to = lookAt.clone().sub(fighter.model.position).setY(0)
+      if (to.lengthSq() > 1e-6) fighter.model.rotation.y = Math.atan2(to.x, to.z)
+    }
+    fighter.model.scale.x = Math.abs(fighter.model.scale.x)
+    st.sit = { phase: 'down' }
+    return true
+  }
+
+  /** 起身：坐好之後才可以（坐下途中按無效）；播完回到自由移動 */
+  standUp(slot) {
+    const st = this.states[slot]
+    if (st?.sit?.phase !== 'idle') return false
+    this.fighters[slot].playPose(this.sitAnims.down, { isOnce: true })
+    st.sit.phase = 'up'
+    return true
   }
 
   /** Esc：立刻取消所有出拳、招式、吸附、凍結；位置與面向保留，回到站立、交還給自由移動 */
@@ -182,13 +315,14 @@ export class FreeMode {
     this.combat.reset()
     Object.entries(this.fighters).forEach(([slot, fighter]) => {
       const model = fighter.model
-      const pos = model.position.clone().setY(0)
+      const pos = model.position.clone().setY(fighter.groundY) // 站回目前的地面（不是 y = 0）
       const rot = model.rotation.y
       fighter.resetToIdle() // 會把 y、z 歸零、轉回左右：之後還原
       model.position.copy(pos)
       model.rotation.y = rot
       model.scale.x = Math.abs(model.scale.x)
       this.states[slot].isEngine = false
+      this.states[slot].sit = null
     })
     this.accumulator = 0
   }
@@ -209,8 +343,14 @@ export class FreeMode {
     Object.entries(this.fighters).forEach(([slot, fighter]) => {
       if (this.combat.isFrozenOther(fighter)) return // 對手放絕招的凍結期間：完全不動
       const st = this.states[slot]
-      raws[slot] = ai[slot] ? this._prepareAI(fighter, st) : this._preparePlayer(slot, fighter, st, pressed)
+      if (st.sit && !fighter.canAct) st.sit = null // 坐著被打中：中斷坐下，交給格鬥邏輯
+      if (st.sit) {
+        raws[slot] = this._updateSit(slot, fighter, st, delta)
+        return
+      }
+      raws[slot] = ai[slot] ? this._prepareAI(fighter, st, delta) : this._preparePlayer(slot, fighter, st, pressed)
       if (!st.isEngine) this._updateFree(slot, fighter, st, pressed, ai, delta)
+      else if (!ai[slot] && !this._isFirstPersonSlot(slot)) this._steerAir(fighter, st, this._getInputDir(this.keys[slot], pressed), delta)
     })
 
     // 格鬥邏輯：固定每秒 fps 幀
@@ -221,10 +361,12 @@ export class FreeMode {
       Object.entries(this.fighters).forEach(([slot, fighter]) => {
         const st = this.states[slot]
         if (ai[slot] && st.isEngine && !this.combat.isFrozenOther(fighter)) raws[slot] = this._thinkAI(slot, fighter, st)
+        this._aimRush(fighter, st)
       })
       const active = Object.keys(this.fighters).filter(slot => this.states[slot].isEngine)
       if (active.length) {
         this.combat.step(raws, active)
+        Object.entries(this.fighters).forEach(([slot, fighter]) => this._stopRushAtOpponent(fighter, this.states[slot]))
         active.forEach(slot => this.fighters[slot].captureFrame()) // 畫面補間：記下這一幀
       }
       // 按一下的輸入只送一次（方向、防禦是按著的，繼續送）
@@ -233,6 +375,8 @@ export class FreeMode {
       })
     }
     this.space.resolvePush(Object.values(this.fighters), {})
+    // 地面跟著場景高低（在地上的人）；走出平台邊緣就落下
+    Object.values(this.fighters).forEach(f => this._followGround(f))
 
     // 推擠框跟著人物（腳底橢圓、除錯顯示也用它）
     Object.values(this.fighters).forEach(f => {
@@ -248,12 +392,37 @@ export class FreeMode {
     const alpha = isPaused ? 1 : this.accumulator * this.fps
     this.interpolated = Object.entries(this.fighters).filter(([slot]) => this.states[slot].isEngine).map(([, f]) => f)
     this.interpolated.forEach(f => f.applyInterpolation(alpha))
+    if (this.isFirstPerson) this._placeFirstPersonCamera()
   }
 
-  /** 渲染後：還原成邏輯幀的姿勢 */
+  /** 渲染後：還原成邏輯幀的姿勢；第一人稱縮掉的頭還原 */
   restoreFrames() {
     this.interpolated.forEach(f => f.restoreFrame())
     this.interpolated = []
+    this.hiddenHead?.setHeadHidden(false)
+    this.hiddenHead = null
+  }
+
+  /**
+   * 第一人稱鏡頭的位置（渲染前、補間之後，鏡頭跟著畫面上的姿勢不會抖）：Head 骨頭往上 eyeUp、往視角方向 eyeForward
+   * 跟隨的人的頭縮到看不見，渲染後由 restoreFrames 還原
+   */
+  _placeFirstPersonCamera() {
+    const fighter = this.fighters[this.followSlot]
+    if (!fighter) return
+    const { eyeUp, eyeForward, eyeRate } = this.firstPerson
+    const fp = this.fp
+    fighter.model.updateMatrixWorld(true)
+    const eye = fighter.getHeadPosition()
+    if (eye) eye.y += eyeUp
+    const pos = eye ?? fighter.model.position.clone().setY(fighter.model.position.y + fighter.characterHeight * eyeRate)
+    pos.addScaledVector(this._getYawDir(), eyeForward)
+    const look = new THREE.Vector3(Math.sin(fp.yaw) * Math.cos(fp.pitch), Math.sin(fp.pitch), Math.cos(fp.yaw) * Math.cos(fp.pitch))
+    this.camera.position.copy(pos)
+    this.controls.target.copy(pos).add(look)
+    this.camera.lookAt(this.controls.target)
+    fighter.setHeadHidden(true)
+    this.hiddenHead = fighter
   }
 
   // internal
@@ -271,11 +440,18 @@ export class FreeMode {
     const toOther = other.model.position.clone().sub(fighter.model.position).setY(0)
 
     const raw = { move: 0 }
+    const isFP = this._isFirstPersonSlot(slot)
+    const isForwardKey = pressed.has(keys.forward)
+    const isBackKey = pressed.has(keys.back) && !isForwardKey
+    // 按著快跑鍵：跳躍的水平速度跟快跑一樣（起跳、空中操控都看這個倍率）
+    const isSprint = !!keys.sprint && pressed.has(keys.sprint)
+    fighter.jumpSpeedRate = isSprint ? (this.runSpeed * this.sprintRate) / fighter.jump.forwardSpeed : this.jumpSpeedRate
     const isJump = !!keys.jump && pressed.has(keys.jump)
     raw.jump = isJump && !st.isJumpHeld
     st.isJumpHeld = isJump
     const isStandGuard = !!this.isStandGuard?.(slot)
-    const isAway = !!moveDir && moveDir.dot(toOther) <= 0
+    // 第一人稱：只有按著後（S）才算防禦；第三人稱：往離開對手的方向移動
+    const isAway = isFP ? isBackKey : !!moveDir && moveDir.dot(toOther) <= 0
     // 防禦姿勢只有木樁防禦（原地）；往後跑的防禦是被打中那一幀才判斷，不改變移動
     raw.guard = isStandGuard || isAway
     raw.standGuard = isStandGuard
@@ -283,9 +459,13 @@ export class FreeMode {
     const needEngine = !fighter.canAct || isAction || raw.jump || isStandGuard
 
     if (needEngine && fighter.canAct) {
+      // 出招方向：第一人稱 = 視角方向；第三人稱移動中 = 移動方向，否則 = 面向
+      const baseDir = isFP ? this._getYawDir() : moveDir ?? this._getFacingDir(fighter)
       if (isStandGuard) this._aim(fighter, st, toOther)
-      else if (!st.isEngine) this._aim(fighter, st, moveDir ?? this._getFacingDir(fighter))
-      if (raw.jump && moveDir) raw.move = 1 // 跑步中跳 = 往前跳
+      else if (pending.pendingAttack && this._isInAssist(baseDir, toOther, other)) this._aim(fighter, st, toOther) // 前方有對手：出招時轉向對手
+      else if (!st.isEngine) this._aim(fighter, st, baseDir)
+      // 跑步中跳 = 往前跳；第一人稱：W 往前跳、S 往後跳、只按左右 = 原地跳
+      if (raw.jump && moveDir) raw.move = isFP ? (isForwardKey ? 1 : isBackKey ? -1 : 0) : 1
     }
     // 移動中按 0：轉向移動方向後當成「前 + 0」（衝刺取消）
     if (moveDir && pending.rushLife > 0) raw.move = 1
@@ -295,12 +475,90 @@ export class FreeMode {
     return raw
   }
 
+  /**
+   * 出招自動面向：對手在 dir 前方左右各 attackAssist.angle 度內、attackAssist.range 公尺內（水平距離）
+   * 對手死亡中不算（不會轉向打不到的人）
+   */
+  _isInAssist(dir, toOther, other, { angle, range } = this.attackAssist) {
+    const dist = toOther.length()
+    if (other.isDying || dist > range || dist < 1e-4) return false
+    return dir.dot(toOther) / dist >= Math.cos(THREE.MathUtils.degToRad(angle))
+  }
+
+  /**
+   * 衝刺取消追蹤：衝刺開始的第一幀決定要不要追（對手在衝刺方向前方 rushAssist 範圍內），要追的話衝刺中每幀轉向對手
+   * st.rushHome：null = 還沒決定（不在衝刺中時清掉）、true / false = 這次衝刺追 / 不追
+   */
+  _aimRush(fighter, st) {
+    if (!this._isRushMoving(fighter)) {
+      st.rushHome = null
+      return
+    }
+    const other = this._getOpponent(fighter)
+    const toOther = other.model.position.clone().sub(fighter.model.position).setY(0)
+    st.rushHome ??= this._isInAssist(st.dir, toOther, other, this.rushAssist)
+    if (st.rushHome && toOther.lengthSq() > 1e-6) this._aim(fighter, st, toOther)
+  }
+
+  /** 追蹤中的衝刺：衝到對手面前（推擠框相貼 + gap）就停在那裡，不會衝過頭或擦邊跨過去 */
+  _stopRushAtOpponent(fighter, st) {
+    if (!st.rushHome || !this._isRushMoving(fighter)) return
+    const other = this._getOpponent(fighter)
+    const pos = fighter.model.position
+    const toOther = other.model.position.clone().sub(pos).setY(0)
+    const dist = toOther.length()
+    const gap = fighter.pushHalfWidth + other.pushHalfWidth + this.rushAssist.gap
+    if (dist >= gap || dist < 1e-4) return
+    const stop = other.model.position.clone().addScaledVector(toOther.divideScalar(dist), -gap)
+    pos.x = stop.x
+    pos.z = stop.z
+  }
+
+  /** 衝刺取消中，或衝刺中出招、還在照衝刺速度前進（rushCarryFrames） */
+  _isRushMoving(fighter) {
+    return fighter.isRushing || (fighter.state === 'attack' && fighter.rushCarryFrames > 0)
+  }
+
   /** AI：離對手 engageDistance 內交給格鬥邏輯（輸入在每一幀推進前由 _thinkAI 決定），遠的時候隨意走動 */
-  _prepareAI(fighter, st) {
+  _prepareAI(fighter, st, delta) {
     const other = this._getOpponent(fighter)
     const dist = other.model.position.clone().sub(fighter.model.position).setY(0).length()
-    this._setEngine(fighter, st, !fighter.canAct || dist <= this.aiFight.engageDistance)
+    this._updateSight(fighter, st, delta)
+    this._setEngine(fighter, st, !fighter.canAct || (this._isAware(st) && dist <= this.aiFight.engageDistance))
     return { move: 0 }
+  }
+
+  /** AI 視野：看到對手（或正被打 / 防禦中）就記下來，沒看到就累計時間 */
+  _updateSight(fighter, st, delta) {
+    const isHurt = fighter.state === 'hit' || fighter.state === 'block' || fighter.state === 'down'
+    st.lostTime = isHurt || this._canSee(fighter) ? 0 : st.lostTime + delta
+  }
+
+  /** 還記得對手（memory 秒內看過） */
+  _isAware(st) {
+    return st.lostTime <= this.aiSight.memory
+  }
+
+  /** 看得到對手：在面向左右各 angle 度、range 公尺內，視線高度往對手發射線沒被場景擋住 */
+  _canSee(fighter) {
+    const other = this._getOpponent(fighter)
+    if (other.isDying) return false
+    const { angle, range, eyeHeight } = this.aiSight
+    const from = fighter.model.position
+    const toOther = other.model.position.clone().sub(from).setY(0)
+    const dist = toOther.length()
+    if (dist > range) return false
+    if (dist > 1e-4 && this._getFacingDir(fighter).dot(toOther) / dist < Math.cos(THREE.MathUtils.degToRad(angle))) return false
+    if (!this.env) return true
+    const eye = this.origin.set(from.x, from.y + eyeHeight, from.z)
+    const target = other.model.position.clone()
+    target.y += eyeHeight
+    const dir = target.sub(eye)
+    const length = dir.length()
+    if (length < 1e-4) return true
+    this.raycaster.far = length
+    this.raycaster.set(eye, dir.divideScalar(length))
+    return !this.raycaster.intersectObject(this.env, true).some(item => item.object.visible)
   }
 
   /** 格鬥模式的 AI：能自由行動時先轉向對手，對手換算到自己的方向上（x = 在自己 +x 上的距離） */
@@ -336,13 +594,89 @@ export class FreeMode {
 
   /** 自由狀態：跑、轉向、播動畫；AI 隨意走動 */
   _updateFree(slot, fighter, st, pressed, ai, delta) {
-    const dir = ai[slot] ? this._getWanderDir(fighter, st.wander, delta) : this._getInputDir(this.keys[slot], pressed)
+    if (!ai[slot] && this._isFirstPersonSlot(slot)) {
+      this._updateFirstPersonMove(slot, fighter, pressed, delta)
+      return
+    }
+    const dir = ai[slot] ? this._getWanderDir(fighter, st, delta) : this._getInputDir(this.keys[slot], pressed)
     const sprintKey = this.keys[slot].sprint
     const isSprint = !ai[slot] && !!dir && !!sprintKey && pressed.has(sprintKey)
     const isMoved = dir ? this._move(fighter, dir, delta, isSprint ? this.sprintRate : 1) : false
-    if (ai[slot] && dir && !isMoved) this._turnAway(st.wander) // AI 撞到東西：馬上換個方向繼續走
+    // AI 撞到東西：馬上換個方向繼續走；追對手被擋住就放棄（忘掉對手，之後要再看到才會追）
+    if (ai[slot] && dir && !isMoved) {
+      if (this._isAware(st)) st.lostTime = Infinity
+      this._turnAway(st.wander)
+    }
     fighter.playLoop(dir ? this._getRunKey(fighter, isSprint) : 'idle')
     fighter.mixer.update(delta)
+    fighter.updateEffects(delta) // 衝刺取消的發光、受擊紅光照時間淡出
+  }
+
+  /**
+   * 空中操控：跳躍的浮空狀態（state 'air'、跳躍拋物線中）按方向鍵時，格鬥邏輯的 +x（st.dir）轉向輸入方向，
+   * 水平速度 vx 往斜跳速度靠近；沒按方向鍵就不變（原地跳維持原地、斜跳維持原本的速度）
+   */
+  _steerAir(fighter, st, dir, delta) {
+    if (!dir || fighter.state !== 'air' || !fighter.isJumpArc || delta <= 0) return
+    const { turnSpeed, accel } = this.airControl
+    // 方向：從目前的 st.dir 往輸入方向轉，每秒最多 turnSpeed 弧度
+    const from = Math.atan2(st.dir.x, st.dir.z)
+    const diff = Math.atan2(Math.sin(Math.atan2(dir.x, dir.z) - from), Math.cos(Math.atan2(dir.x, dir.z) - from))
+    const angle = from + Math.sign(diff) * Math.min(Math.abs(diff), turnSpeed * delta)
+    this._aim(fighter, st, new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle)))
+    // 速度：格鬥邏輯裡人物面向 +x，往前 = 正的 vx
+    const speed = fighter.jump.forwardSpeed * fighter.jumpSpeedRate
+    fighter.vx += (speed - fighter.vx) * (1 - Math.exp(-accel * delta))
+  }
+
+  /** 坐下中：不能移動、出招（按的鍵丟掉）；坐下 / 起身的動作播完才換下一段 */
+  _updateSit(slot, fighter, st, delta) {
+    const pending = this.combat.input[slot]
+    pending.pendingAttack = null
+    pending.rushLife = 0
+    fighter.isGuarding = false
+    fighter.mixer.update(delta)
+    fighter.updateEffects(delta)
+    if (st.sit.phase === 'down' && fighter.isPoseDone) {
+      fighter.playPose(this.sitAnims.idle)
+      st.sit.phase = 'idle'
+    } else if (st.sit.phase === 'up' && fighter.isPoseDone) {
+      st.sit = null
+      fighter.playLoop('idle')
+    }
+    return { move: 0 }
+  }
+
+  /** 這個人是第一人稱操作中（鏡頭跟著他、第一人稱打開） */
+  _isFirstPersonSlot(slot) {
+    return this.isFirstPerson && slot === this.followSlot
+  }
+
+  /** 第一人稱視角的水平方向 */
+  _getYawDir(target = new THREE.Vector3()) {
+    return target.set(Math.sin(this.fp.yaw), 0, Math.cos(this.fp.yaw))
+  }
+
+  /** 第一人稱的自由移動：人物一直面向視角，W 往前跑（Shift 快跑）、S 往後走、A / D 側走；方向鍵以視角為準（_getInputDir） */
+  _updateFirstPersonMove(slot, fighter, pressed, delta) {
+    const keys = this.keys[slot]
+    const model = fighter.model
+    model.rotation.y = this.fp.yaw
+    model.scale.x = Math.abs(model.scale.x)
+    const dir = this._getInputDir(keys, pressed)
+    let anim = 'idle'
+    if (dir) {
+      const forward = dir.dot(this._getYawDir())
+      const isSprint = forward > 0.5 && !!keys.sprint && pressed.has(keys.sprint)
+      const { back, side } = this.firstPerson
+      const rate = forward > 0.5 ? (isSprint ? this.sprintRate : 1) : forward < -0.5 ? back : side
+      const step = this._collide(model.position, this.step.copy(dir).multiplyScalar(this.runSpeed * rate * delta))
+      model.position.add(step)
+      anim = forward > 0.5 ? this._getRunKey(fighter, isSprint) : forward < -0.5 ? 'walkBack' : 'walk'
+    }
+    fighter.playLoop(anim)
+    fighter.mixer.update(delta)
+    fighter.updateEffects(delta)
   }
 
   /** 人物目前面向（世界方向） */
@@ -390,7 +724,19 @@ export class FreeMode {
   _updateCamera(delta) {
     const smooth = t => t * t * (3 - 2 * t)
     const fighter = this.fighters[this.followSlot]
-    const aim = fighter.model.position.clone().setY(this.followHeight)
+    const { dx, dy } = this.look
+    this.look.dx = 0
+    this.look.dy = 0
+    // 被攻擊後的轉向：移動滑鼠、時間到就停止
+    const turn = this.attackerTurn
+    if (turn && (Math.abs(dx) > 2 || (turn.time -= delta) <= 0)) this.attackerTurn = null
+    if (this.isFirstPerson) {
+      this._updateFirstPersonCamera(fighter, dx, dy, delta)
+      return
+    }
+    // 注視點高度跟著地面（平滑跟上，台階不會跳一下；跳躍不跟）
+    this.cameraGroundY += (fighter.groundY - this.cameraGroundY) * Math.min(1, delta * this.floor.cameraSpeed)
+    const aim = fighter.model.position.clone().setY(this.cameraGroundY + this.followHeight)
     let offset = this.camera.position.clone().sub(this.controls.target)
 
     const ob = this.offsetBlend
@@ -400,8 +746,10 @@ export class FreeMode {
       const length = THREE.MathUtils.lerp(ob.from.length(), ob.to.length(), k)
       offset = ob.from.clone().lerp(ob.to, k).setLength(length)
       if (ob.t >= 1) this.offsetBlend = null
-    } else if (this.isLockOn) {
-      offset = this._getLockOnOffset(fighter, offset, delta)
+    } else {
+      if (this.isLockOn) offset = this._getLockOnOffset(fighter, offset, delta)
+      else if (this.attackerTurn) offset = this._getLockOnOffset(fighter, offset, delta, this.attackerTurn.other, this.hitTurn.speed)
+      offset = this._rotateOffset(offset, this.isLockOn ? 0 : dx, dy) // 滑鼠轉鏡頭（鎖定對手時只能上下）
     }
 
     const fb = this.followBlend
@@ -414,19 +762,46 @@ export class FreeMode {
     this.camera.position.copy(aim).add(offset)
   }
 
+  /** 滑鼠轉鏡頭：繞注視點水平轉 dx、上下轉 dy（像素），垂直角度限制在 pitchRange */
+  _rotateOffset(offset, dx, dy) {
+    if (!dx && !dy) return offset
+    const sph = new THREE.Spherical().setFromVector3(offset)
+    sph.theta -= dx * this.lookSpeed
+    sph.phi = THREE.MathUtils.clamp(sph.phi - dy * this.lookSpeed, ...this.pitchRange)
+    return new THREE.Vector3().setFromSpherical(sph)
+  }
+
+  /** 第一人稱視角：滑鼠轉視角；鎖定對手時水平轉向對手（鏡頭位置在渲染前由 _placeFirstPersonCamera 放） */
+  _updateFirstPersonCamera(fighter, dx, dy, delta) {
+    const fp = this.fp
+    const { maxPitch } = this.firstPerson
+    if (this.isLockOn || this.attackerTurn) {
+      const other = this.isLockOn ? this._getOpponent(fighter) : this.attackerTurn.other
+      const speed = this.isLockOn ? this.lockOnTurnSpeed : this.hitTurn.speed
+      const to = other.model.position.clone().sub(fighter.model.position)
+      const goal = Math.atan2(to.x, to.z)
+      const diff = Math.atan2(Math.sin(goal - fp.yaw), Math.cos(goal - fp.yaw))
+      fp.yaw += diff * Math.min(1, delta * speed)
+      if (!this.isLockOn && Math.abs(diff) < 0.02) this.attackerTurn = null
+    } else {
+      fp.yaw -= dx * this.lookSpeed
+    }
+    fp.pitch = THREE.MathUtils.clamp(fp.pitch - dy * this.lookSpeed, -maxPitch, maxPitch)
+  }
+
   /**
    * 鎖定對手的鏡頭位置：只轉水平方向，轉到跟隨的人背後（對手 → 自己的方向）
    * 高度（俯角）與距離維持目前的值，滑鼠上下轉動、縮放照常；從目前方向慢慢轉過去，兩人重疊時不轉
    */
-  _getLockOnOffset(fighter, offset, delta) {
-    const other = this._getOpponent(fighter)
+  _getLockOnOffset(fighter, offset, delta, other = this._getOpponent(fighter), speed = this.lockOnTurnSpeed) {
     const back = fighter.model.position.clone().sub(other.model.position).setY(0)
     const flat = Math.hypot(offset.x, offset.z)
     if (back.lengthSq() < 1e-4 || flat < 1e-4) return offset
     const from = Math.atan2(offset.x, offset.z)
     const goal = Math.atan2(back.x, back.z)
     const diff = Math.atan2(Math.sin(goal - from), Math.cos(goal - from))
-    const angle = from + diff * Math.min(1, delta * this.lockOnTurnSpeed)
+    if (!this.isLockOn && Math.abs(diff) < 0.02) this.attackerTurn = null // 被攻擊後的轉向：轉到了
+    const angle = from + diff * Math.min(1, delta * speed)
     return new THREE.Vector3(Math.sin(angle) * flat, offset.y, Math.cos(angle) * flat)
   }
 
@@ -450,32 +825,29 @@ export class FreeMode {
   }
 
   /**
-   * AI 走動：跑一段、停一段，輪流；停 = null
-   * 每段開始時決定方向：chaseRate 機率追對手（一直朝對手當下的位置跑），其餘隨機
+   * AI 走動：記得對手（視野內看過）→ 一直朝對手當下的位置跑；否則跑一段、停一段，輪流（停 = null），每段隨機方向
    */
-  _getWanderDir(fighter, wander, delta) {
+  _getWanderDir(fighter, st, delta) {
+    const wander = st.wander
     const toOther = this._getOpponent(fighter).model.position.clone().sub(fighter.model.position).setY(0)
+    if (this._isAware(st) && toOther.lengthSq() > 1e-6) return wander.dir.copy(toOther).normalize()
     wander.time -= delta
     if (wander.time <= 0) {
       wander.isMoving = !wander.isMoving
       const [min, max] = wander.isMoving ? this.wander.moveTime : this.wander.idleTime
       wander.time = THREE.MathUtils.randFloat(min, max)
-      wander.isChasing = wander.isMoving && Math.random() < this.aiFight.chaseRate
-      if (wander.isMoving && !wander.isChasing) {
+      if (wander.isMoving) {
         const angle = Math.random() * Math.PI * 2
         wander.dir.set(Math.sin(angle), 0, Math.cos(angle))
       }
     }
-    if (!wander.isMoving) return null
-    if (wander.isChasing && toOther.lengthSq() > 1e-6) wander.dir.copy(toOther).normalize()
-    return wander.dir
+    return wander.isMoving ? wander.dir : null
   }
 
-  /** AI 撞到東西：轉 90° ~ 270° 換個方向繼續跑（追對手被擋住時也改成隨機走） */
+  /** AI 撞到東西：轉 90° ~ 270° 換個方向繼續跑 */
   _turnAway(wander) {
     const angle = Math.atan2(wander.dir.x, wander.dir.z) + THREE.MathUtils.randFloat(Math.PI / 2, Math.PI * 1.5)
     wander.dir.set(Math.sin(angle), 0, Math.cos(angle))
-    wander.isChasing = false
     wander.isMoving = true
     wander.time = THREE.MathUtils.randFloat(...this.wander.moveTime)
   }
@@ -515,6 +887,37 @@ export class FreeMode {
     return step.set(0, 0, 0)
   }
 
+  /**
+   * 腳下地板的世界高度：從 pos（腳底）上方 stepUp 往下找場景，第一個碰到的面
+   * 沒有場景 = 0；找不到 = null
+   */
+  _getFloor(pos) {
+    if (!this.env) return 0
+    const { stepUp, far } = this.floor
+    this.raycaster.far = far
+    this.raycaster.set(this.origin.set(pos.x, pos.y + stepUp, pos.z), DOWN)
+    const hit = this.raycaster.intersectObject(this.env, true).find(item => item.object.visible)
+    return hit ? hit.point.y : null
+  }
+
+  /**
+   * 在地上的人：groundY 換成腳下地板的高度（離地高度 y 不變，例如被吸附浮空中）
+   * 地板低了超過 stepDown（走出平台邊緣）→ 從當下高度落下；isSnap = 直接站上去（進入自由模式時）
+   */
+  _followGround(fighter, isSnap = false) {
+    if (fighter.isAirborne) return
+    const pos = fighter.model.position.clone().setY(fighter.groundY)
+    const floor = this._getFloor(pos)
+    if (floor == null) return
+    if (!isSnap && floor < fighter.groundY - this.floor.stepDown) {
+      fighter.startFall()
+      return
+    }
+    const y = fighter.y
+    fighter.groundY = floor
+    fighter.y = y
+  }
+
   /** 撞牆：去掉朝牆的分量；滑開後還是撞到就停住 */
   _slideWall(pos, step) {
     const hit = this._castWall(pos, step)
@@ -535,7 +938,7 @@ export class FreeMode {
     if (!this.env) return this.bounds == null || (Math.abs(at.x) <= this.bounds && Math.abs(at.z) <= this.bounds)
     const { from, length: far } = this.groundRay
     this.raycaster.far = far
-    this.raycaster.set(this.origin.set(at.x, from, at.z), DOWN)
+    this.raycaster.set(this.origin.set(at.x, pos.y + from, at.z), DOWN)
     return this.raycaster.intersectObject(this.env, true).some(item => item.object.visible)
   }
 
@@ -547,7 +950,7 @@ export class FreeMode {
     this.raycaster.far = length + this.radius
     let nearest = null
     this.rayHeights.forEach(h => {
-      this.raycaster.set(this.origin.set(pos.x, h, pos.z), dir)
+      this.raycaster.set(this.origin.set(pos.x, pos.y + h, pos.z), dir) // 高度從腳底算（站在平台上、跳起來時跟著）
       const hit = this.raycaster.intersectObject(this.env, true).find(item => item.object.visible && item.face)
       if (hit && (!nearest || hit.distance < nearest.distance)) nearest = hit
     })
@@ -631,12 +1034,32 @@ class PlaneSpace {
 
   checkWallBounce() {}
 
-  cornerPush() {}
+  /**
+   * 對手背後撞到場景物體、擊退退不完：剩下的距離改成攻擊方往後退（同格鬥模式的牆角推回）
+   * 擊退方向 = 攻擊方 → 對手（水平）；距離同格鬥模式：站著受擊 = knockVelocity / KNOCK_DECAY，追打飛走中 = 招式的 knockback
+   */
+  cornerPush(attacker, target, move) {
+    let distance = 0
+    if (target.knockVelocity) distance = Math.abs(target.knockVelocity) / KNOCK_DECAY
+    else if (target.state === 'down' && move?.knockback) distance = Math.abs(move.knockback)
+    if (!distance) return
+    const dir = target.model.position.clone().sub(attacker.model.position).setY(0)
+    if (dir.lengthSq() < 1e-8) return
+    dir.normalize()
+    const fm = this.fm
+    const hit = fm._castWall(target.model.position, dir.clone().multiplyScalar(distance))
+    const room = hit ? Math.max(0, hit.distance - fm.radius) : distance
+    if (distance <= room) return
+    // 攻擊方的格鬥邏輯 +x = 自己的 st.dir：往「離開對手」的方向退
+    const st = fm.states[Object.keys(fm.fighters).find(slot => fm.fighters[slot] === attacker)]
+    const side = st ? Math.sign(st.dir.dot(dir)) || 1 : 1
+    attacker.pushVelocity = -side * (distance - room) * KNOCK_DECAY
+  }
 
   /** a、b 重疊時分開：a 退 rateA、b 退其餘（都會擋牆） */
   _push(a, b, rateA) {
     if (a.isPassing || b.isPassing) return
-    if (Math.abs(a.y - b.y) > a.characterHeight * this.fm.overheadRate) return
+    if (Math.abs(a.model.position.y - b.model.position.y) > a.characterHeight * this.fm.overheadRate) return // 世界高度差（含地面高低）
     const delta = b.model.position.clone().sub(a.model.position).setY(0)
     const dist = delta.length()
     const min = a.pushHalfWidth + b.pushHalfWidth

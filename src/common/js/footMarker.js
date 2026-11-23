@@ -59,7 +59,7 @@ export class FootMarker {
     if (!this.mesh.visible) return
     fighter.pushBox.getCenter(this.center)
     fighter.pushBox.getSize(this.size)
-    this.mesh.position.set(this.center.x, this.y, this.center.z)
+    this.mesh.position.set(this.center.x, fighter.groundY + this.y, this.center.z) // 自由模式站在高處時跟著地面
     this.mesh.scale.set(this.size.x / 2, 1, this.size.z / 2)
   }
 }

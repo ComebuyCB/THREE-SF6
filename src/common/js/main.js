@@ -17,6 +17,8 @@ import { Combat, LineSpace } from './combat.js'
 import { addSmileMorph } from './faceMorph.js'
 import { FighterAI, AI_LEVELS } from './ai.js'
 import { Roguelike } from './roguelike.js'
+import { SitSpot } from './sitSpot.js'
+import { Fisheye } from './fisheye.js'
 
 const MODEL_DIR = 'src/model'
 const SOUND_DIR = 'src/sound'
@@ -70,7 +72,7 @@ class FighterViewer {
         idle: `${MODEL_DIR}/anims/normal/Idle.fbx`,
         walk: `${MODEL_DIR}/anims/normal/Walking.fbx`,
         run: `${MODEL_DIR}/anims/normal/Running.fbx`, // 自由模式（M）跑步
-        fastRun: `${MODEL_DIR}/anims/normal/FastRun.fbx`, // 自由模式的衝刺
+        fastRun: `${MODEL_DIR}/anims/normal/StandardRun.fbx`, // 自由模式的衝刺
         dash: `${MODEL_DIR}/anims/normal/Walking_dash.fbx`, // 衝刺（地面 / 空中 / 衝刺取消共用），後衝倒著播
         hit: `${MODEL_DIR}/anims/normal/HitTo.fbx`,
         light: `${MODEL_DIR}/anims/normal/Punching_L.fbx`,
@@ -84,6 +86,9 @@ class FighterViewer {
         flyDeath: `${MODEL_DIR}/anims/normal/FlyingBack_Death.fbx`,
         jump: `${MODEL_DIR}/anims/normal/Jumping.fbx`,
         block: `${MODEL_DIR}/anims/normal/BodyBlock.fbx`,
+        // 自由模式坐下（freeMode.js sitAnims）：坐下 = standUp 倒著播 → sitIdle 循環；起身 = standUp 正著播
+        standUp: `${MODEL_DIR}/anims/normal/StandingUp.fbx`,
+        sitIdle: `${MODEL_DIR}/anims/normal/SittingIdle.fbx`,
         ...Object.fromEntries(SUPER_ARTS.map(name => [name, `${MODEL_DIR}/anims/superArt/${name}.fbx`])),
       },
       // 有 root motion 的動作：保留臀部前後位移曲線，由程式轉成人物座標（其餘動作完全原地播放）
@@ -111,6 +116,7 @@ class FighterViewer {
         heavy: { start: 4 },
         block: { start: 3 }, // 防禦動作
         hit: { start: 6 }, // 受擊動作
+        standUp: { start: 68, end: 12 }, // 起身（坐下時倒著播）：結尾跟 idle 接不太起來，裁掉最後 20 幀
       },
       // 動作開頭加快：前 to 幀（遊戲幀，裁切後）用 rate 倍速播完，之後照原速；招式幀數照加快後的時間
       speedAnims: {
@@ -122,13 +128,23 @@ class FighterViewer {
       //     z 正數 = 場景往鏡頭方向移（人物站到模型裡比較後面的位置）
       //   halfWidth = 切換到這個場景時的打鬥場地半寬（公尺）；沒填 = 預設的 stageHalfWidth
       //   model 是 null = 沒有場景：只有影子地板與天空（自由模式限制在 ±halfWidth 的方框內）
+      //   props = 放在場景裡的物件（世界座標，不跟 transform 移動）：
+      //     { type: 'sit', url, position: [x, y, z], rotation（度）, scale, radius } 可以坐下的物件（sitSpot.js；自由模式靠近按 F）
       scenes: {
         無: { model: null, halfWidth: 5 },
         庭院: { model: `${MODEL_DIR}/background/courtyard.glb`, ground: [0.0252, -0.0414, 0.6321], transform: { x: -0.3, y: -0.03, z: 4, rotation: 0, scale: 0.9 } },
         // 模型中央是房子與門口台階：往後移，人物站在房子前的空地，房子當背景
-        閥門房: { model: `${MODEL_DIR}/background/bayard_station_valve_house.glb`, ground: [0.0013, -0.0167, 9.416], transform: { x: 1.5, y: -0.05, z: -8.1, rotation: 0, scale: 0.9 } },
+        閥門房: {
+          model: `${MODEL_DIR}/background/bayard_station_valve_house.glb`, ground: [0.0013, -0.0167, 9.416], transform: { x: 1.5, y: -0.05, z: -8.1, rotation: 0, scale: 0.9 },
+          props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, position: [-4.5, 0, -2.5] }],
+        },
         // 人物站在拱橋正下方、橫跨道路：左右 ±5 公尺都是平地，最近的牆在 7.5 公尺外，頭頂整段都有橋
         橋下: { model: `${MODEL_DIR}/background/rick_roll_bridge.glb`, ground: [0.0049, 0.0115, -4.9441], transform: { x: 1.5, y: -0.03, z: -8.5, rotation: 0, scale: 1 }, halfWidth: 5 },
+        // 室內（天花板約 2.8 公尺）：模型裡 (-28, -1) 那塊大廳移到場地中心，打鬥線到鏡頭之間左右 7.5 公尺內沒有牆，背後牆約 3 公尺
+        後室: {
+          model: `${MODEL_DIR}/background/backrooms_vr.glb`, ground: [0, 0, -0.12], transform: { x: 28, y: 0, z: 1, rotation: 0, scale: 1 },
+          props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, position: [28, 0, 2] }],
+        },
       },
       // 天空（GUI 可切換）：procedural = 程式畫的動態天空（skyDome.js）；其餘是 2:1 全景圖，當作無限遠的背景，3D 場景沒擋住的地方看得到
       skies: {
@@ -143,7 +159,7 @@ class FighterViewer {
       stageHalfWidth: 7.5, // 場地邊界 x = ±7.5（最大值；開啟「場景牆壁當邊界」時，場景的牆更近就縮到牆的位置）
       // 場景牆壁當邊界：從場地中心沿 ±x 方向、在這幾個高度（公尺）各發一條射線，最近碰到的場景物體就是邊界
       sceneWallHeights: [0.3, 1, 1.6],
-      startGap: 1.6, // 開場兩人距離
+      startGap: 3, // 開場兩人距離（P1 x = -1.5、P2 x = 1.5）
       // 選完升級牌進下一層時 P1 的補給：血量 + 上限的 hpRate、DG / SG 各 + 幾格（血量 / 量條其餘保留，不會回滿）
       stageReward: { hpRate: 0.1, dgBars: 1, sgBars: 1 },
       maxDistance: 5, // 兩人最遠距離（公尺），超過時往外移動的一方被擋住
@@ -158,6 +174,9 @@ class FighterViewer {
       cameraShake: { frames: 12, frequency: 25, superAmplitude: 0.03 },
       // 環繞鏡頭（H）：一直看著兩人中點，前 pullTime 秒拉遠（距離 × pullScale），繞一整圈共 duration 秒，最後 returnTime 秒拉回原本的鏡頭（秒，不受遊戲速度影響）
       orbitCamera: { duration: 3, pullTime: 0.5, returnTime: 0.5, pullScale: 1.8 },
+      // 自由模式 → 格鬥模式（M）：人物飛回開場位置、鏡頭移回預設位置的過渡（時間同進入自由模式的鏡頭轉向 freeMode.js enterTime）
+      //   arcHeight = 飛行弧線最高多高（公尺）
+      fightReturn: { arcHeight: 1.2 },
       // 音效：一般招式命中 hit、絕招命中 superHit、防禦住 block、倒地 knockdown；其他 key 給招式的 sounds 用；{ url, volume } 可個別調音量
       sounds: {
         hit: { url: `${SOUND_DIR}/hit2.mp3`, volume: 0.8 },
@@ -269,6 +288,8 @@ class FighterViewer {
     this.defaultHalfWidth = this.stageHalfWidth // 場景沒填 halfWidth 時用的半寬
     this.wallRaycaster = new THREE.Raycaster()
     this.envCache = {} // 場景名稱 → Promise<Group>，同一個場景模型只載入一次
+    this.props = [] // 目前場景裡的物件（場景設定的 props，例如可以坐下的營火 SitSpot）
+    this.sitSpot = null // P1 正坐在哪個物件旁
     this.cameraPull = 0 // 跳躍時鏡頭額外往後拉的距離
     // 鎖定鏡頭（絕招演出、命中鏡頭、環繞鏡頭）時滑鼠左鍵拖曳：yaw / pitch 疊在演出鏡頭上（弧度）
     //   只影響畫面（渲染後還原），演出結束、放開滑鼠後才把角度併進一般鏡頭
@@ -276,6 +297,7 @@ class FighterViewer {
     this.camCollide = { dist: Infinity, isApplied: false, pos: new THREE.Vector3(), raycaster: new THREE.Raycaster() }
     this.camCollide.raycaster.firstHitOnly = true
     this.camDrag = { isDragging: false, x: 0, y: 0, yaw: 0, pitch: 0, isApplied: false, pos: new THREE.Vector3(), quat: new THREE.Quaternion() }
+    this.returning = null // 自由 → 格鬥模式的過渡中：{ time, duration, items: [{ fighter, from, to, fromRot, toRot }], camFrom, camTo }
     this.orbitCam = null // 環繞鏡頭中：{ time, target, offset }（target、offset = 開始時的一般鏡頭）
     this.hitCam = null // 命中鏡頭中：{ attacker, move, phase: 'in' / 'out', time, fromPos, fromTarget, base: { target, offset } }
     this.shake = null // 受擊搖晃中：{ fighter, time, duration }（秒）
@@ -379,8 +401,6 @@ class FighterViewer {
       canvas.setPointerCapture(e.pointerId)
     })
     canvas.addEventListener('pointermove', e => {
-      // 自由模式鎖定對手（V）時，滑鼠左鍵拖曳轉鏡頭 = 解除鎖定，交給 OrbitControls
-      if ((e.buttons & 1) && (e.movementX || e.movementY)) this.freeMode.setLockOn(false)
       const d = this.camDrag
       if (!d.isDragging) return
       // 轉動速度同 OrbitControls：拖曳畫面高度 = 轉一圈
@@ -393,6 +413,26 @@ class FighterViewer {
     const endDrag = () => { this.camDrag.isDragging = false }
     canvas.addEventListener('pointerup', endDrag)
     canvas.addEventListener('pointercancel', endDrag)
+
+    // 自由模式：滑鼠鎖定（游標隱藏），移動滑鼠 = 轉鏡頭；沒鎖定時（例如按 Esc 放開）點畫面重新鎖定
+    // 滑鼠中鍵 = 鎖定對手（再按一次解除）；鎖定對手中按任何滑鼠鍵 = 回到一般鏡頭
+    // 自由模式不讓 OrbitControls 收到按下（它會 setPointerCapture，滑鼠鎖定中會出錯）；滾輪縮放是另一個事件，照常
+    canvas.addEventListener('pointerdown', e => {
+      if (this.freeMode.isActive) e.stopImmediatePropagation()
+    }, { capture: true })
+    canvas.addEventListener('mousedown', e => {
+      if (!this.freeMode.isActive || this.returning) return
+      if (e.button === 1) e.preventDefault() // 中鍵不要觸發瀏覽器的自動捲動
+      if (document.pointerLockElement !== canvas) {
+        this._lockPointer()
+        return
+      }
+      if (e.button === 1) this.freeMode.toggleLockOn()
+      else this.freeMode.setLockOn(false)
+    })
+    document.addEventListener('mousemove', e => {
+      if (this.freeMode.isActive && document.pointerLockElement === canvas) this.freeMode.addLook(e.movementX, e.movementY)
+    })
 
     window.addEventListener('keydown', e => {
       // 選升級牌中：1 / 2 / 3（主鍵盤或數字鍵盤）選牌；結算視窗：Enter 重新開始（按鈕有焦點時空白鍵也可以）；其他遊戲按鍵都不理
@@ -440,10 +480,11 @@ class FighterViewer {
         if (!e.repeat && e.code === 'Digit1') this._toggleAI('p1')
         if (!e.repeat && e.code === 'Digit2') this._toggleAI('p2')
         if (!e.repeat && e.code === 'KeyC') this.freeMode.switchFollow()
-        if (!e.repeat && e.code === 'KeyV') this.freeMode.toggleLockOn()
+        if (!e.repeat && e.code === 'KeyN' && !this.returning) this.freeMode.toggleFirstPerson()
         if (!e.repeat && e.code === 'KeyB') this._setCameraCollision(!this.params.cameraCollision)
         if (!e.repeat && e.code === 'KeyH') this.startOrbitCamera()
-        if (!e.repeat && e.code === 'KeyM') this.toggleFreeMode()
+        if (!e.repeat && e.code === 'KeyM' && !this.returning) this.toggleFreeMode()
+        if (!e.repeat && e.code === 'KeyF') this._interact()
         // 遊戲速度：主鍵盤 Backspace 左邊的 - / =（數字鍵盤的 - + 不算，e.code 不同）；按住會連續調
         if (e.code === 'Minus') this._changeTimeScale(-this.timeScaleStep)
         if (e.code === 'Equal') this._changeTimeScale(this.timeScaleStep)
@@ -602,7 +643,7 @@ class FighterViewer {
     const prev = this[slot]
     const startX = (slot === 'p1' ? -1 : 1) * (this.startGap / 2)
 
-    if (this.freeMode.isActive) this.toggleFreeMode() // 換人物：先離開自由模式
+    if (this.freeMode.isActive) this.toggleFreeMode(true) // 換人物：先離開自由模式（不播過渡）
     this._endHitCamera() // 換人物：命中鏡頭直接回到一般鏡頭
     this._endOrbitCamera()
     prev?.dispose()
@@ -729,6 +770,7 @@ class FighterViewer {
     const { x = 0, y = 0, z = 0, rotation = 0, scale = 1 } = entry.transform || {}
     Object.assign(this.params, { envOffsetX: x, envOffsetY: y, envOffsetZ: z, envRotation: rotation, envScale: scale })
     this.stageMaxHalfWidth = entry.halfWidth ?? this.defaultHalfWidth
+    this._setProps(entry.props)
 
     // 沒有場景：拿掉場景模型，影子地板照 GUI 設定
     if (!entry.model) {
@@ -752,6 +794,37 @@ class FighterViewer {
       if (this.freeMode.isActive) this.freeMode.setEnv(group)
       this.stage?.setGroundVisible(false)
     })
+  }
+
+  /** 換場景時換物件：拿掉舊的，照場景設定放新的（目前只有 type: 'sit'） */
+  _setProps(props = []) {
+    this.props.forEach(prop => prop.dispose())
+    this.props = props.filter(p => p.type === 'sit').map(({ type, ...options }) => new SitSpot({ scene: this.scene, ...options }))
+  }
+
+  /**
+   * 物件每個畫面更新：營火的動畫一直播；自由模式中 P1 靠近（或坐著）時發亮、顯示 F 提示
+   * @param {number} delta 遊戲時間（秒）
+   */
+  _updateProps(delta) {
+    const fm = this.freeMode
+    const isSitting = fm.isActive && fm.isSitting('p1')
+    this.props.forEach(prop => {
+      const isActive = fm.isActive && !this.returning && !this.params.p1AI && (prop === this.sitSpot || (!isSitting && prop.isNear(this.p1)))
+      prop.update(delta, { isActive, isSitting: isSitting && prop === this.sitSpot, camera: this.camera })
+    })
+  }
+
+  /** F：自由模式中，P1 靠近可以坐下的物件時坐下；坐著時起身 */
+  _interact() {
+    const fm = this.freeMode
+    if (!fm.isActive || this.params.p1AI) return
+    if (fm.isSitting('p1')) {
+      if (fm.standUp('p1')) this.sitSpot = null
+      return
+    }
+    const spot = this.props.find(prop => prop.isNear(this.p1))
+    if (spot && fm.sitDown('p1', spot.worldPosition)) this.sitSpot = spot
   }
 
   /**
@@ -891,6 +964,8 @@ class FighterViewer {
     this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100)
     this.camera.position.set(0, 1.4, 4.5)
     this.defaultCamera = { pos: this.camera.position.clone(), target: new THREE.Vector3(0, 1, 0) } // 格鬥模式的預設鏡頭（離開自由模式時回到這裡）
+    // 第一人稱的輕微魚眼：視角加大 + 桶狀扭曲（只在第一人稱打開，見 _animate）
+    this.fisheye = new Fisheye({ renderer: this.renderer, scene: this.scene, camera: this.camera })
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
     this.controls.target.set(0, 1, 0)
@@ -1156,6 +1231,9 @@ class FighterViewer {
     this.guiControllers.showXray = viewFolder.add(this.params, 'showXray').name('被擋住時透視角色（X）')
     this.guiControllers.cameraCollision = viewFolder.add(this.params, 'cameraCollision').name('鏡頭避開物體（B）').onChange(v => this._setCameraCollision(v))
     this.guiControllers.showDebug = viewFolder.add(this.params, 'showDebug').name('顯示除錯：座標、判定框、邊界牆（O）').onChange(v => this._setDebugVisible(v))
+    const fisheyeFolder = viewFolder.addFolder('第一人稱魚眼').close()
+    fisheyeFolder.add(this.fisheye, 'fov', 45, 140, 1).name('視角（度）').onChange(() => this.fisheye.refresh())
+    fisheyeFolder.add(this.fisheye, 'strength', 0, 0.6, 0.01).name('扭曲強度')
     const debugFolder = viewFolder
     debugFolder.add(this.params, 'showSkeleton').name('顯示骨架').onChange(v => {
       fighters().forEach(f => f.setSkeletonVisible(v))
@@ -1236,6 +1314,7 @@ class FighterViewer {
    * 自由模式沒有命中鏡頭；受擊搖晃是沿 z 軸搖，自由模式會跟走位衝突，不做
    */
   _onHit(attacker, target, { move, isLaunch, isBlock, hitstop }) {
+    this.freeMode.faceAttacker(attacker, target) // 自由模式：鏡頭跟隨的人被攻擊（含被防禦）→ 鏡頭平滑轉向攻擊方
     if (isBlock) return
     this._startCameraShake(this._getCameraShake(attacker))
     if (this.freeMode.isActive) return
@@ -1318,7 +1397,7 @@ class FighterViewer {
 
   /** 鏡頭由程式控制中（OrbitControls 停用）：絕招演出、命中鏡頭、環繞鏡頭 */
   _isCameraLocked() {
-    return !!(this._isCinematicCamera() || this.hitCam || this.orbitCam)
+    return !!(this._isCinematicCamera() || this.hitCam || this.orbitCam || this.returning)
   }
 
   /** 絕招演出控制鏡頭中（演出中按 H 環繞後，演出就不再控制鏡頭，只管燈光與凍結） */
@@ -1371,7 +1450,7 @@ class FighterViewer {
   _applyCameraCollision(delta) {
     const cc = this.camCollide
     cc.isApplied = false
-    if (!this.params.cameraCollision || !this.envModel) return
+    if (!this.params.cameraCollision || !this.envModel || this.freeMode.isFirstPerson) return // 第一人稱鏡頭在眼睛，不用避開
     const margin = 0.25
     const minDist = 0.6
     const target = this.controls.target
@@ -1410,21 +1489,78 @@ class FighterViewer {
 
   /**
    * 自由模式切換（M）：進入時中斷招式與演出，人物在場景裡自由走動（見 freeMode.js），鏡頭平滑轉成俯角看 P1
-   * 離開時兩人回到開場的格鬥位置（x = ±startGap / 2、面向對方），鏡頭回到格鬥模式的預設位置
+   * 離開時兩人飛回開場的格鬥位置（x = ±startGap / 2、面向對方），鏡頭移回格鬥模式的預設位置（見 _startFightReturn）
+   * @param {boolean} isInstant 直接切回格鬥模式、不播過渡（換人物時）
    */
-  toggleFreeMode() {
+  toggleFreeMode(isInstant = false) {
     if (!this.p1 || !this.p2) return
     const fm = this.freeMode
     if (!fm.isActive) {
       this.resetAll()
       this.combat.space = fm.space
       fm.enter({ p1: this.p1, p2: this.p2 }, this.envModel)
-      this.hud.setCoordsVisible(false)
+      this._setMouseLook(true)
       this._setHelpMode(true)
       return
     }
+    if (isInstant) this._finishFightReturn()
+    else this._startFightReturn()
+  }
 
-    fm.exit()
+  /**
+   * 自由 → 格鬥模式的過渡開始：先取消所有動作，記下兩人與鏡頭現在的位置、開場位置
+   * 過渡期間（_updateFightReturn）遊戲不推進，兩人播跳躍的滯空姿勢沿弧線飛回去、轉向對方，鏡頭同時移回預設位置
+   */
+  _startFightReturn() {
+    this._cancelFreeMoves()
+    if (this.freeMode.isFirstPerson) this.freeMode.toggleFirstPerson() // 先回到第三人稱（模型顯示），再飛回去
+    this._setMouseLook(false)
+    const half = this.startGap / 2
+    const toRot = { p1: Math.PI / 2, p2: -Math.PI / 2 } // 開場 P1 在左面向右、P2 在右面向左
+    const items = [['p1', -half], ['p2', half]].map(([slot, x]) => {
+      const fighter = this[slot]
+      fighter.playLoop('jump') // 跳躍動畫的時間由這裡控制（timeScale 0）
+      return { fighter, from: fighter.model.position.clone(), to: new THREE.Vector3(x, 0, 0), fromRot: fighter.model.rotation.y, toRot: toRot[slot] }
+    })
+    this.returning = {
+      time: 0,
+      duration: this.freeMode.enterTime,
+      items,
+      camFrom: { pos: this.camera.position.clone(), target: this.controls.target.clone() },
+      camTo: { pos: this.defaultCamera.pos.clone(), target: this.defaultCamera.target.clone() },
+    }
+  }
+
+  /** 過渡每個畫面：位置沿弧線、方向轉最短角度、鏡頭位置與注視點一起內插；跑完才真的切回格鬥模式 */
+  _updateFightReturn(realDelta) {
+    const r = this.returning
+    r.time = Math.min(r.duration, r.time + realDelta)
+    const t = r.time / r.duration
+    const k = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2 // 先加速再減速
+    const { animTakeoff, animLand, animFps } = this.p1.jump
+    r.items.forEach(({ fighter, from, to, fromRot, toRot }) => {
+      const pos = fighter.model.position.lerpVectors(from, to, k)
+      pos.y += Math.sin(Math.PI * k) * this.fightReturn.arcHeight
+      const diff = Math.atan2(Math.sin(toRot - fromRot), Math.cos(toRot - fromRot))
+      fighter.model.rotation.y = fromRot + diff * k
+      // 跳躍動畫：起跳 → 落地之間跟著進度播
+      const action = fighter.actions.jump
+      if (action) action.time = (animTakeoff + (animLand - animTakeoff) * k) / animFps
+      fighter.mixer.update(0)
+      fighter.model.updateMatrixWorld(true)
+      fighter.updateBoxes() // 推擠框跟著（腳底橢圓、除錯顯示）
+    })
+    this.camera.position.lerpVectors(r.camFrom.pos, r.camTo.pos, k)
+    this.controls.target.lerpVectors(r.camFrom.target, r.camTo.target, k)
+    this.camera.lookAt(this.controls.target)
+    if (t >= 1) this._finishFightReturn()
+  }
+
+  /** 真的切回格鬥模式：兩人站回開場位置、面向對方，鏡頭回到預設位置 */
+  _finishFightReturn() {
+    this.returning = null
+    this.freeMode.exit()
+    this._setMouseLook(false)
     this.combat.space = this.lineSpace
     this.p1.x = -this.startGap / 2
     this.p2.x = this.startGap / 2
@@ -1436,6 +1572,32 @@ class FighterViewer {
     this.cameraPull = 0
     this.hud.setCoordsVisible(this.params.showDebug)
     this._setHelpMode(false)
+  }
+
+  /**
+   * 自由模式的滑鼠操作：打開時鎖定滑鼠（游標隱藏）、OrbitControls 不處理滑鼠拖曳（滾輪縮放照常）；關閉時還原
+   */
+  _setMouseLook(isOn) {
+    const buttons = this.controls.mouseButtons
+    if (isOn) {
+      this.orbitMouseButtons ??= { ...buttons }
+      Object.assign(buttons, { LEFT: null, MIDDLE: null, RIGHT: null })
+      this._lockPointer()
+      return
+    }
+    if (this.orbitMouseButtons) Object.assign(buttons, this.orbitMouseButtons)
+    this.controls.enableZoom = true
+    if (document.pointerLockElement) document.exitPointerLock()
+  }
+
+  /** 鎖定滑鼠（要在按鍵 / 點擊的事件裡呼叫，瀏覽器才允許）；失敗（例如剛按 Esc 放開）就等下次點畫面 */
+  _lockPointer() {
+    const canvas = this.renderer.domElement
+    try {
+      canvas.requestPointerLock()?.catch?.(() => {})
+    } catch {
+      // 不支援或被拒絕：維持游標顯示
+    }
   }
 
   /** 操作說明 / 除錯視窗切換成自由 / 格鬥模式的內容 */
@@ -1828,6 +1990,7 @@ class FighterViewer {
     this.camera.aspect = window.innerWidth / window.innerHeight
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(window.innerWidth, window.innerHeight)
+    this.fisheye?.setSize(window.innerWidth, window.innerHeight)
   }
 
   _animate = () => {
@@ -1840,11 +2003,15 @@ class FighterViewer {
     const fighters = this.p1 && this.p2 ? [this.p1, this.p2] : []
     // 自由模式：不跑格鬥邏輯與畫面補間，人物由 FreeMode 直接移動
     const isFree = this.freeMode.isActive
-    if (fighters.length && isFree) {
+    if (fighters.length && this.returning) {
+      this._updateFightReturn(realDelta) // 自由 → 格鬥模式的過渡：遊戲不推進
+      this.footMarker.update()
+    } else if (fighters.length && isFree) {
       this.freeMode.update(this.params.paused ? 0 : realDelta * this.params.timeScale, this.keys, { p1: this.params.p1AI, p2: this.params.p2AI }, realDelta)
       this.freeMode.applyInterpolation(this.params.paused)
       this.hitEffect.update(this.params.paused ? 0 : realDelta * this.params.timeScale)
       this.footMarker.update() // 推擠框跟著人物走，腳底橢圓也跟著
+      this.hud.updateCoords(fighters) // 除錯顯示的座標（含 z）
     } else if (fighters.length) {
       const step = 1 / FPS
       // 選升級牌、結算視窗中：遊戲停住
@@ -1879,12 +2046,15 @@ class FighterViewer {
     this.hud.updateGauges(this.combat.gauges)
     this.hud.updateComboDebug(this.combat.comboStats)
     this.skyDome.update(realDelta, this.camera)
+    if (!this.freeMode.isSitting('p1')) this.sitSpot = null // 被打中等原因中斷坐下
+    this._updateProps(this.params.paused ? 0 : realDelta * this.params.timeScale)
 
     this._updateXray()
     this._applyCameraDrag()
     this._applyCameraCollision(realDelta)
     this._applyCameraShake(this.params.paused ? 0 : realDelta * this.params.timeScale)
-    this.renderer.render(this.scene, this.camera)
+    this.fisheye.update(realDelta, this.freeMode.isActive && this.freeMode.isFirstPerson)
+    this.fisheye.render()
     this.camera.position.sub(this.camShakeOffset) // 晃動只影響這個畫面
     this._restoreCameraCollision()
     this._restoreCameraDrag()

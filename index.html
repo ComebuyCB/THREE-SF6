@@ -147,6 +147,9 @@
     <button class="index_over-restart js-over-restart" type="button">重新開始</button>
   </section>
 
+  <!-- 互動提示：自由模式靠近可以坐下的物件時，顯示在物件上方（sitSpot.js 寫入 --x / --y 與文字） -->
+  <p id="interactPrompt" class="index_prompt" role="status" hidden><kbd class="_key">F</kbd><span class="_text js-prompt-text">坐下</span></p>
+
   <!--
     畫面下方中間：操作說明 (?)、除錯 (bug) 兩個小視窗（popup.js，一次只開一個）；不受「顯示幀數表」影響
     data-mode="fight" / "free"：只在格鬥 / 自由模式顯示的內容，自由模式時 #helpDock 加 is_free（main.js _setHelpMode）
@@ -202,7 +205,11 @@
             <dt>防禦</dt><dd>被打中時正往遠離對手的方向移動即防禦</dd>
             <dt>衝刺取消</dt><dd>移動中按 0；拳打中或被防禦後按 0（空中也可以）；消耗 3 格 DG，不足 3 格照樣能用但 DG 歸 0 並產生虛血</dd>
             <dt>絕招（SA）</dt><dd>消耗 1 格 SG，不滿 1 格不能用</dd>
-            <dt>C / V</dt><dd>鏡頭切換跟隨的人 / 鎖定對手</dd>
+            <dt>滑鼠</dt><dd>移動滑鼠轉鏡頭（游標隱藏；Esc 放開，點畫面再鎖定）、滾輪縮放</dd>
+            <dt>滑鼠中鍵</dt><dd>鎖定對手；鎖定中按任何滑鼠鍵回到一般鏡頭</dd>
+            <dt>N</dt><dd>第一人稱：W 前進、S 後退（防禦）、A / D 側走，招式照舊</dd>
+            <dt>C</dt><dd>鏡頭切換跟隨的人</dd>
+            <dt>F</dt><dd>靠近營火時坐下；坐著時再按一次起身</dd>
           </dl>
         </section>
       </section>
@@ -231,7 +238,7 @@
           <dt>X</dt><dd>被擋住時透視角色</dd>
           <dt>B</dt><dd>鏡頭避開物體</dd>
           <dt>H</dt><dd>環繞鏡頭</dd>
-          <dt>滑鼠</dt><dd>左鍵轉動、滾輪縮放鏡頭</dd>
+          <dt>滑鼠</dt><dd><span data-mode="fight">左鍵轉動、滾輪縮放鏡頭</span><span data-mode="free">移動轉鏡頭、中鍵鎖定對手、滾輪縮放</span></dd>
         </dl>
       </section>
     </aside>

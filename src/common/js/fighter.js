@@ -188,6 +188,10 @@ export class Fighter {
     this.isFreeFacing = false // 自由模式：不自動轉向對手（面向由 freeMode.js 決定）
     this.dashStyle = null // 自由模式的衝刺：{ anim（動作 key）, speedRate（位移倍率）}；衝刺取消不套用
     this.jumpSpeedRate = 1 // 斜跳水平速度倍率（自由模式 2 倍；高度不變）
+    // 地面高度（世界座標 y，公尺）：y 是相對這個高度的高度。格鬥模式固定 0；自由模式由 freeMode.js 跟著腳下的場景地板更新（斜坡、平台）
+    this.groundY = 0
+    this.freeHurtPad = 0.05 // 自由模式的受擊框：骨頭範圍（含 pad）外，水平再加寬幾公尺（每邊）
+    this.getFloor = null // (fighter) → 腳下地板的世界高度（null = 找不到）；有給時跳躍 / 落下會落在地板上（自由模式），沒給 = 落回 groundY
     this.flyDir = 0 // 打飛時往哪邊飛（+1 / -1）
     this.flyBounce = 0 // 這次打飛的反彈力度（招式的 launch.wallBounce），0 = 不反彈
     this.isFlyBounced = false // 這次飛走已經撞牆反彈過（只彈一次）
@@ -265,12 +269,13 @@ export class Fighter {
     return this.faceRight ? 1 : -1
   }
 
+  /** 離地高度（相對 groundY；跳躍、被打飛的高度都用這個） */
   get y() {
-    return this.model.position.y
+    return this.model.position.y - this.groundY
   }
 
   set y(value) {
-    this.model.position.y = value
+    this.model.position.y = value + this.groundY
   }
 
   /** 可以自由行動（可出招、移動、跳） */
@@ -447,6 +452,7 @@ export class Fighter {
     this._applyChainCut()
     this._applyAdvance()
     this._checkDashThroughMiss()
+    this._checkMissCut()
     this._checkPassFlow()
     this._updatePushback()
     this._updateFlash()
@@ -512,6 +518,7 @@ export class Fighter {
   /** 招式的大階段：前搖 / 攻擊段（含多段之間的空檔）/ 收招 */
   _getAttackPhase() {
     const { startup, recovery, hits, hitFrames } = this.moves[this.currentMove]
+    if (this.isMissCut) return 'recovery' // missCut：確定揮空後（後續 + 結尾）全部算收招（不再有攻擊判定）
     if (hits) {
       const frame = this.moveFrame // 幀數表的編號（1 起算）
       if (frame < hitRange(hits[0], hitFrames)[0]) return 'startup'
@@ -558,8 +565,17 @@ export class Fighter {
       part.bones.forEach(bone => part.box.expandByPoint(bone.getWorldPosition(pos)))
       part.box.expandByScalar(part.pad)
       if (part.topBone) part.box.max.y = Math.max(part.box.max.y, part.topBone.getWorldPosition(pos).y + part.pad)
-      part.box.min.z -= part.zPad
-      part.box.max.z += part.zPad
+      // 格鬥模式：前後（z）多加 zPad（人物只面向左右，身體的厚度在 z）
+      // 自由模式：人物可以面向任何方向，直接用骨頭算出的範圍，水平（x、z）再加寬 freeHurtPad
+      if (this.isFreeFacing) {
+        part.box.min.x -= this.freeHurtPad
+        part.box.max.x += this.freeHurtPad
+        part.box.min.z -= this.freeHurtPad
+        part.box.max.z += this.freeHurtPad
+      } else {
+        part.box.min.z -= part.zPad
+        part.box.max.z += part.zPad
+      }
       part.isOff = isFlyPose && part.noFly
       part.helper.visible = !this.isInvincible && !part.isOff
     })
@@ -579,8 +595,22 @@ export class Fighter {
 
     // 前後跟著人物的 z（格鬥模式 z = 0；自由模式人物會前後走動）
     const z = this.model.position.z
-    this.pushBox.min.set(this.x - this.pushHalfWidth, 0, z - 0.3)
-    this.pushBox.max.set(this.x + this.pushHalfWidth, 0.02, z + 0.3)
+    this.pushBox.min.set(this.x - this.pushHalfWidth, this.groundY, z - 0.3)
+    this.pushBox.max.set(this.x + this.pushHalfWidth, this.groundY + 0.02, z + 0.3)
+  }
+
+  /**
+   * 第一人稱：頭縮到看不見（身體照常顯示）。只在渲染那一下縮，渲染後還原（freeMode.js），判定框、動畫不受影響
+   * @param {boolean} isHidden
+   */
+  setHeadHidden(isHidden) {
+    this._getBone('Head')?.scale.setScalar(isHidden ? 1e-3 : 1)
+  }
+
+  /** 頭（Head 骨頭）的世界座標；沒有這根骨頭回傳 null */
+  getHeadPosition(target = new THREE.Vector3()) {
+    const head = this._getBone('Head')
+    return head ? head.getWorldPosition(target) : null
   }
 
   /** 攻擊判定只在 active 幀、且目前這一段尚未命中時有效 */
@@ -658,15 +688,17 @@ export class Fighter {
    * @param {{ hitStun: number, knockback: number }} move 攻擊方的招式數據
    * @param {boolean} isLaunch 打飛：播飛走 + 起身，只有起身無敵（空中、飛走中被打到也一律重新打飛）
    * 在空中（跳躍、空中衝刺等）被不會打飛的攻擊打中：一樣播飛走動畫，但飛的距離 = 這一招在地面的擊退距離
+   * @param {boolean} isForceStand 強制站立受擊（吸附招式的第 1 下）：不管在空中、飛走中，直接回到地面播一般受擊
    */
-  takeHit(fromX, move, isLaunch = false) {
+  takeHit(fromX, move, isLaunch = false, isForceStand = false) {
     this.grabFrame = 0
     this.hangFrames = 0 // 上一下的空中停頓作廢（空中普通命中由 Combat 重新呼叫 hangInAir）
     this.flashFrame = this.flashFrames
     this._applyFlash(1) // 頓幀期間不會 update，先亮起來
     this.knockVelocity = 0
+    if (isForceStand) this._forceGround()
 
-    if ((isLaunch || this.isAirborne || this.isLaunched) && this.actions.fly) {
+    if (!isForceStand && (isLaunch || this.isAirborne || this.isLaunched) && this.actions.fly) {
       if (this.isJumpArc) {
         // 從跳躍拋物線切到自由落下，延續當下的垂直速度
         this.vy = this._getJumpVelocity(this.airFrame / this.jump.air)
@@ -721,6 +753,21 @@ export class Fighter {
     this._setState('hit', true)
     this.snapToCurrentAction()
     this._snapJuggleAnimation()
+  }
+
+  /** 強制站立受擊：空中、飛走中的狀態全部清掉，直接站回地面（高度歸 0） */
+  _forceGround() {
+    this.y = 0
+    this.vx = 0
+    this.vy = 0
+    this.isAirborne = false
+    this.isJumpArc = false
+    this.hasAirAttacked = false
+    this.hasAirDashed = false
+    this.fallRate = 1
+    this.flyHeight = 0
+    this.flyBaseY = 0
+    this.juggle = null
   }
 
   /**
@@ -1115,6 +1162,31 @@ export class Fighter {
     return this.state === 'air' && !this.hasAirDashed && !!input.rush && input.move === this.facingSign
   }
 
+  /** 腳下地板相對 groundY 的高度；沒有 getFloor（格鬥模式）或找不到地板 = 0 */
+  _getFloorY() {
+    const floor = this.getFloor?.(this)
+    return floor == null ? 0 : floor - this.groundY
+  }
+
+  /**
+   * 自由模式：走出平台邊緣、腳下的地板突然變低 → 從當下高度落下（落到地板才落地）
+   * 能自由行動時進入滯空（播跳躍的下降段）；出招、受擊中只開始往下掉，狀態不變
+   */
+  startFall() {
+    if (this.isAirborne) return
+    this.isAirborne = true
+    this.isJumpArc = false
+    this.vx = 0
+    this.vy = 0
+    this.fallRate = 1
+    this.hangFrames = 0
+    this.airFrame = Math.round(this.jump.air * 0.75) // 跳躍動畫從下降段開始
+    if (!this.canAct) return
+    this.hasAirAttacked = false
+    this.hasAirDashed = false
+    this._setState('air')
+  }
+
   /** 從跳躍拋物線切到自由落下，延續當下的垂直速度 */
   _toFreeFall() {
     if (!this.isJumpArc) return
@@ -1168,6 +1240,7 @@ export class Fighter {
   /** 空中物理：拋物線、水平速度；腳底碰地就落地（被打飛也一樣會落下） */
   _updateAirborne() {
     if (!this.isAirborne || this.state === 'airDash') return // 空中衝刺中停在當下高度
+    const prevY = this.y
     this.airFrame++
     this.x += this.vx * STEP
 
@@ -1184,8 +1257,16 @@ export class Fighter {
       const { riseGravity, gravity } = this._getJumpPhysics()
       this.vy -= (this.vy > 0 ? riseGravity : gravity) * t
     }
-    if (this.y > 0) return
+    // 地板（相對 groundY）：格鬥模式 = 0；自由模式 = 腳下場景的高度（跳上平台、從高處落下）
+    const floor = this._getFloorY()
+    if (this.getFloor && (this.y > floor || this.y > prevY)) {
+      // 跳躍拋物線走完還沒碰到地板（地板比起跳處低）：改成自由落下繼續往下掉
+      if (this.isJumpArc && this.airFrame >= this.jump.air) this._toFreeFall()
+      return
+    }
+    if (!this.getFloor && this.y > 0) return
 
+    this.groundY += floor // 站到新的地板上
     this.y = 0
     this.vx = 0
     this.vy = 0
@@ -1400,6 +1481,12 @@ export class Fighter {
       this.recoveryCut = 0
       this.connected = false
       this.rushQueued = false
+      this.isMissCut = false // missCut：這次出招已經確定揮空（之後算收招）
+      this.isMissCutDone = false // missCut：已經跳到結尾（jumpTo 幀）
+      this.missFrames = 0 // missCut：確定揮空後經過的幀數
+      this.isMissSoundCut = false // missCut：音效已經中斷過
+      this.missSoundCutNow = false // missCut：這一幀要停音效（Combat 停掉後清掉）
+      this.hasGrabbed = false // 這次出招的抓取判定抓到人了（Combat._checkGrabs 設定）
     }
 
     let actionKey = state
@@ -1709,6 +1796,32 @@ export class Fighter {
     this._play(key, false, false)
   }
 
+  /**
+   * 自由模式的姿勢動作（坐下 / 起身，見 freeMode.js）：從目前姿勢淡入播 key
+   * reverse = 倒著播（從最後一幀播到第 0 幀）；isOnce = 播一次停在結尾（isPoseDone 變 true），否則循環
+   * @returns {boolean} 有沒有這個動作
+   */
+  playPose(key, { reverse = false, isOnce = false } = {}) {
+    const next = this.actions[key]
+    if (!next) return false
+    const prev = this.currentAction
+    next.reset()
+    next.setLoop(isOnce ? THREE.LoopOnce : THREE.LoopRepeat, Infinity)
+    next.clampWhenFinished = true
+    next.setEffectiveTimeScale(reverse ? -1 : 1)
+    next.setEffectiveWeight(1)
+    if (reverse) next.time = next.getClip().duration
+    next.play()
+    if (prev && prev !== next) prev.crossFadeTo(next, this.fadeTime, false)
+    this.currentAction = next
+    return true
+  }
+
+  /** playPose 的 isOnce 動作播完了（LoopOnce 播到頭會停住） */
+  get isPoseDone() {
+    return !!this.currentAction?.paused
+  }
+
   /** dashThrough 穿越中（main.js 這段期間不推擠） */
   get isPassing() {
     return this.isDashing && !this.isLastPassStop
@@ -1737,6 +1850,44 @@ export class Fighter {
     const d = this.getCurrentMove()?.dashThrough
     if (!d || d.missEnd == null || this.connected) return
     if (this.moveFrame > d.to + d.missEnd) this._setState(this.isAirborne ? 'air' : 'idle')
+  }
+
+  /**
+   * missCut：指定的攻擊判定（或抓取判定）結束時還沒打中 / 抓到 → 照原動畫再播 after 幀（後續）→ 跳到第 jumpTo 幀播到最後（結尾）
+   * 被防禦也算沒打中；確定揮空起不再有攻擊判定，跳過去後不再前進（advance 跳過的距離不補）
+   * 音效另外算：確定揮空後再播 soundAfter 幀就中斷（跟動畫跳不跳無關；沒填 = 不中斷）
+   */
+  _checkMissCut() {
+    const move = this.getCurrentMove()
+    const m = move?.missCut
+    if (!m || (this.passCount ?? 1) !== 1) return
+    if (!this.isMissCut) {
+      const isGrab = m.judge === 'grab'
+      const end = isGrab ? move.grab?.to : this._getJudgeEnd(move, m.judge ?? 1)
+      if (end == null || this.moveFrame <= end) return
+      if (isGrab ? this.hasGrabbed : this.hitConfirmed) return
+      this.isMissCut = true // 確定揮空：之後算收招
+      this.missFrames = 0
+    }
+    this.missFrames++ // 確定揮空後第幾幀（1 起算）；動畫跳過去之後照樣累計
+    // 音效中斷：揮空後第 soundAfter + 1 幀停掉這招的音效（Combat 看到 isMissSoundCut 後處理）
+    if (m.soundAfter != null && !this.isMissSoundCut && this.missFrames > m.soundAfter) {
+      this.isMissSoundCut = true
+      this.missSoundCutNow = true
+    }
+    if (this.isMissCutDone || this.missFrames <= (m.after ?? 0)) return // 後續：照原動畫再播 after 幀
+    this.isMissCutDone = true
+    if (this.moveFrame >= m.jumpTo) return
+    const delay = move.firstPassDelay ?? 0
+    this.stateFrame = m.jumpTo - 1 + delay // moveFrame = jumpTo
+    this.currentAction.time = this.stateFrame / FPS
+    this.mixer.update(0)
+  }
+
+  /** 第 n 個攻擊判定（1 起算）的最後一幀（幀數表編號）；沒有 hits 的招式 = 攻擊判定結束的那一幀 */
+  _getJudgeEnd(move, n) {
+    if (move.hits) return move.hits[n - 1] ? hitRange(move.hits[n - 1], move.hitFrames)[1] : null
+    return this.stateLength - move.recovery
   }
 
   /** repeatOnHit：這次打中，第 at 幀後轉身面向對手、從頭再出一次（最多 times 次） */
@@ -1815,6 +1966,24 @@ export class Fighter {
   startGlow() {
     this.glowFrame = Math.round(this.rush.glowTime * FPS)
     this._applyGlow(this.rush.glowStrength)
+  }
+
+  /**
+   * 自由模式：不在格鬥邏輯控制中（自由移動、坐下）時也讓衝刺取消的發光、受擊紅光照時間淡出
+   * （格鬥邏輯中由 update 每幀處理；自由移動不跑 update，不這樣做的話會一直亮著）
+   * @param {number} delta 遊戲時間（秒）
+   */
+  updateEffects(delta) {
+    if (this.glowFrame <= 0 && this.flashFrame <= 0) {
+      this.effectTime = 0
+      return
+    }
+    this.effectTime = (this.effectTime ?? 0) + delta
+    while (this.effectTime >= STEP) {
+      this.effectTime -= STEP
+      this._updateFlash()
+      this._updateGlow()
+    }
   }
 
   /** 衝刺取消的發光：疊加自發光，最後 1/3 的時間淡出 */

@@ -82,7 +82,7 @@ export class Hud {
     this.coordEls.forEach(el => el.classList.toggle('is_hide', !isVisible))
   }
 
-  /** 每次畫面更新：座標文字跟著人物腳底移動 */
+  /** 每次畫面更新：座標文字（x、y、z，公尺）跟著人物腳底移動；格鬥模式 z 固定 0，自由模式會前後走動 */
   updateCoords(fighters) {
     if (!this.showCoords) return
     const { clientWidth: w, clientHeight: h } = this.canvas
@@ -91,11 +91,12 @@ export class Hud {
       const el = this.coordEls[i]
       if (!fighter) return
 
-      this.projected.set(fighter.x, fighter.y, 0).project(this.camera)
+      const { x, y, z } = fighter.model.position
+      this.projected.set(x, y, z).project(this.camera)
       const left = (this.projected.x * 0.5 + 0.5) * w
       const top = (-this.projected.y * 0.5 + 0.5) * h
       el.style.transform = `translate(${left}px, ${top}px)`
-      el.textContent = `x ${fighter.x.toFixed(2)}　y ${fighter.y.toFixed(2)}`
+      el.textContent = `x ${x.toFixed(2)}　y ${y.toFixed(2)}　z ${z.toFixed(2)}`
     })
   }
 
