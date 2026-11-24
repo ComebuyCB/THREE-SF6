@@ -24,8 +24,10 @@ export class Atmosphere {
       scene: null,
       sky: null, // Sky
       hemi: null, // HemisphereLight（環境光）
-      sun: null, // DirectionalLight（主光：白天太陽、晚上月亮；target 在原點）
+      sun: null, // DirectionalLight（主光：白天太陽、晚上月亮；照向 target，target 由 setFocus 移動）
       sunDistance: 10, // 主光離 target 多遠（公尺）
+      // 室內（setIndoor）：主光不跟太陽，固定從 dir 方向照下來、亮度 power（不受時間、天氣影響），影子一直都在
+      indoorLight: { dir: [0.25, 1, 0.15], power: 2 },
       time: 15, // 幾點（0 ~ 24）
       isRunning: false,
       speed: 10, // 時間流速：每秒過幾分鐘
@@ -36,6 +38,9 @@ export class Atmosphere {
       // 閃電：enabled、雨量至少 minRain 才打、間隔 gap 秒（隨機）、亮度 power、閃法 pulses（[開始秒, 持續秒, 強度]）
       lightning: { enabled: true, minRain: 0.6, gap: [5, 14], power: 1, pulses: [[0, 0.07, 1], [0.13, 0.05, 0.55], [0.26, 0.12, 0.85]] },
       light: { sun: 2.5, hemi: 2, moon: 0.4, nightHemi: 0.35 }, // 亮度：中午的太陽、白天的環境光、月光、晚上的環境光
+      // 夜晚燈光亮度 0 ~ 1：晚上的環境光、月光往白天拉（0 = 真實的暗、1 = 跟白天一樣亮、不偏藍）
+      // 烘焙光影的場景本來就不會變暗，只有吃燈光的人物、物件會；拉高讓人物跟場景一樣亮
+      nightBright: 0,
       onLights: null, // ({ hemi, dir }) → 主光、環境光的基本亮度（沒給 = 直接設在燈上）
     }
 
@@ -61,6 +66,8 @@ export class Atmosphere {
     this.nextStrike = this._randomGap()
     this.sunDir = new THREE.Vector3()
     this.moonDir = new THREE.Vector3()
+    this.isIndoor = false
+    this.lightDir = new THREE.Vector3(0, 1, 0) // 主光從哪個方向照過來（單位向量）
 
     // 5. init
     this.apply()
@@ -101,6 +108,18 @@ export class Atmosphere {
     if (this._updateLightning(delta)) isChanged = true
     if (isChanged) this.apply()
     this.rain.update(delta, camera)
+  }
+
+  /** 室內 / 室外：室外主光（影子）跟著太陽、月亮；室內固定從上方照、不受時間天氣影響 */
+  setIndoor(isIndoor) {
+    this.isIndoor = !!isIndoor
+    this.apply()
+  }
+
+  /** 主光照向的點（例如人物腳底）：影子範圍跟著這個點，人物走多遠影子都在 */
+  setFocus(point) {
+    this.sun.target.position.copy(point)
+    this.sun.position.copy(point).addScaledVector(this.lightDir, this.sunDistance)
   }
 
   /** 馬上打一次閃電（GUI 測試用） */
@@ -144,16 +163,26 @@ export class Atmosphere {
     // 主光：太陽在地平線上用太陽，否則用月光；陰天、雨天變弱
     const { light } = this
     const sunPower = light.sun * THREE.MathUtils.smoothstep(e, -0.05, 0.2)
-    const moonPower = light.moon * night
+    const nb = this.nightBright
+    const moonPower = THREE.MathUtils.lerp(light.moon, light.sun * 0.7, nb) * night // 月光：夜晚燈光亮度拉高時變亮
     const isSun = sunPower >= moonPower
-    const dirPower = (isSun ? sunPower : moonPower) * (1 - 0.75 * o) * (1 - 0.5 * r)
-    this.sun.position.copy(isSun ? sunDir : moonDir).multiplyScalar(this.sunDistance)
-    this.sun.color.copy(isSun ? _c5 : COLORS.moonLight)
+    let dirPower = (isSun ? sunPower : moonPower) * (1 - 0.75 * o) * (1 - 0.5 * r)
+    if (this.isIndoor) {
+      // 室內：固定從上方照、白光，亮度不跟時間天氣
+      this.lightDir.fromArray(this.indoorLight.dir).normalize()
+      this.sun.color.set(0xffffff)
+      dirPower = this.indoorLight.power
+    } else {
+      this.lightDir.copy(isSun ? sunDir : moonDir)
+      this.sun.color.copy(isSun ? _c5 : _c6.copy(COLORS.moonLight).lerp(COLORS.daySkyLight, nb))
+    }
+    this.setFocus(this.sun.target.position)
     // 環境光：天空那側跟著天色，晚上偏藍、變暗；陰天時主光弱，環境光相對變成主要光源
     const f = this.flash * this.lightning.power
-    const hemiPower = THREE.MathUtils.lerp(light.nightHemi, light.hemi, day) * (1 - 0.25 * o) * (1 - 0.3 * r) + f * 3
-    this.hemi.color.copy(COLORS.nightSkyLight).lerp(COLORS.daySkyLight, day).lerp(COLORS.lightning, Math.min(1, f))
-    this.hemi.groundColor.copy(COLORS.nightGround).lerp(COLORS.dayGround, day)
+    const lit = THREE.MathUtils.lerp(day, 1, nb) // 燈光用的白天程度（夜晚燈光亮度拉高時，晚上的環境光也接近白天）
+    const hemiPower = THREE.MathUtils.lerp(light.nightHemi, light.hemi, lit) * (1 - 0.25 * o) * (1 - 0.3 * r) + f * 3
+    this.hemi.color.copy(COLORS.nightSkyLight).lerp(COLORS.daySkyLight, lit).lerp(COLORS.lightning, Math.min(1, f))
+    this.hemi.groundColor.copy(COLORS.nightGround).lerp(COLORS.dayGround, lit)
 
     this.sky.setDaylight(Math.min(2, this.sky.daylight + f)) // 全景圖天空也閃
     if (this.onLights) this.onLights({ hemi: hemiPower, dir: dirPower + f * 1.5 })
@@ -226,3 +255,4 @@ const _c2 = new THREE.Color()
 const _c3 = new THREE.Color()
 const _c4 = new THREE.Color()
 const _c5 = new THREE.Color()
+const _c6 = new THREE.Color()

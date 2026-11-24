@@ -16,6 +16,7 @@ export class Hud {
       status: { p1: '#statusP1', p2: '#statusP2' }, // 血量 + 動力槽
       superGauge: { p1: '#superP1', p2: '#superP2' }, // 絕招量條
       comboDebug: '#comboDebug', // 連段傷害（除錯）
+      gameSpeed: '.js-game-speed', // 遊戲速度（連段傷害上方）
       showCoords: true,
       comboMin: 2, // 幾下以上才顯示
       comboHideDelay: 1.2, // 連段結束後幾秒淡出（秒）
@@ -65,6 +66,7 @@ export class Hud {
       const col = comboDebugEl?.querySelector(`._col.is_${slot}`)
       return [slot, { damage: col?.querySelector('.js-combo-damage'), scale: col?.querySelector('.js-combo-scale') }]
     }))
+    this.gameSpeedEl = comboDebugEl?.querySelector(this.gameSpeed)
     this.projected = new THREE.Vector3()
 
     // 5. init
@@ -167,6 +169,14 @@ export class Hud {
       this._setText(els.damage, stat.damage)
       this._setText(els.scale, `${Math.round(stat.scale * 100)}%`)
     })
+  }
+
+  /** 遊戲速度：暫停時顯示「暫停」 */
+  updateGameSpeed(timeScale, isPaused) {
+    const el = this.gameSpeedEl
+    if (!el) return
+    this._setText(el, isPaused ? '暫停' : `遊戲速度 ${+timeScale.toFixed(2)}x`)
+    el.classList.toggle('is_paused', isPaused)
   }
 
   update(delta) {

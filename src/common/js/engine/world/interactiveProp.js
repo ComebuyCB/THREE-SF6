@@ -18,6 +18,7 @@ export class InteractiveProp {
       scale: 1,
       height: null, // 有給：縮放到這個高度（公尺），底部貼地（scale 不用）
       radius: 1.8, // 互動距離（公尺，水平距離）
+      onMaterial: null, // (material) → 每個材質載入時呼叫（例如套上跟場景一樣的霧：黑暗霧範圍外看不見）
       promptEl: '#interactPrompt',
       promptHeight: 0.3, // 提示在物件頂端上方多高（公尺）
       // 發亮：點光源（lightIntensity 0 = 不加燈），材質自發光的顏色與強度，淡入淡出速度（每秒）
@@ -80,6 +81,7 @@ export class InteractiveProp {
         obj.castShadow = true
         obj.receiveShadow = true
         ;[obj.material].flat().forEach(material => {
+          this.onMaterial?.(material)
           if (!material.emissive) return
           this.materials.push({ material, emissive: material.emissive.clone(), intensity: material.emissiveIntensity, hasMap: !!material.emissiveMap })
         })

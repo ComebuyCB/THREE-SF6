@@ -55,7 +55,7 @@ export class Terrain {
   static buildBVH(env) {
     env.updateMatrixWorld(true)
     env.traverse(obj => {
-      if (!obj.isMesh || obj.isSkinnedMesh || obj.geometry.boundsTree) return
+      if (!obj.isMesh || obj.isSkinnedMesh || obj.userData.isShadowCatcher || obj.geometry.boundsTree) return
       obj.geometry.boundsTree = new MeshBVH(obj.geometry)
       obj.raycast = acceleratedRaycast
     })
@@ -198,7 +198,7 @@ export class Terrain {
     Terrain.buildBVH(object)
     const meshes = []
     object.traverse(obj => {
-      if (!obj.isMesh || obj.isSkinnedMesh || !obj.geometry.boundsTree) return
+      if (!obj.isMesh || obj.isSkinnedMesh || obj.userData.isShadowCatcher || !obj.geometry.boundsTree) return
       if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox()
       meshes.push(obj)
     })

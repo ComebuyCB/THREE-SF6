@@ -423,7 +423,10 @@ export class FreeMode {
       }
       if (st.hide && !fighter.canAct) this._cancelHide(fighter, st) // 躲著被打中：中斷，交給格鬥邏輯
       if (st.hide) {
+        const yawBefore = fighter.model.rotation.y
         raws[slot] = this._updateHide(slot, fighter, st, delta)
+        // 第一人稱：走位、轉身時視角跟著人物一起轉（滑鼠照常可以再轉）
+        if (this._isFirstPersonSlot(slot)) this.fp.yaw += fighter.model.rotation.y - yawBefore
         return
       }
       raws[slot] = ai[slot] ? this._prepareAI(fighter, st, delta) : this._preparePlayer(slot, fighter, st, pressed)

@@ -1,4 +1,5 @@
 import { InteractiveProp } from './interactiveProp.js'
+import { trimClip } from '../assets/clipTools.js'
 
 /**
  * SitSpot：場景裡可以坐下的物件（例如營火 animated_fire.glb）
@@ -9,6 +10,8 @@ export class SitSpot extends InteractiveProp {
   static defaults = {
     labels: { use: '坐下', leave: '起身' },
     glow: { color: 0xff8a3d, lightIntensity: 6, lightDistance: 4, emissive: 0xff7a2a, emissiveIntensity: 0.6, emissiveBoost: 0.8 },
+    playFrames: null, // 只循環動畫的一段：正數 = 前幾幀、負數 = 後幾幀（例如 -40 = 最後 40 幀）；null = 整段
+    clipFps: 30, // 模型動畫的幀率（playFrames 用；animated_fire.glb 是 30）
   }
 
   /** 互動種類（main.js 依這個決定按 F 做什麼） */
@@ -17,7 +20,17 @@ export class SitSpot extends InteractiveProp {
   }
 
   onLoaded(gltf) {
-    gltf.animations.forEach(clip => this.mixer.clipAction(clip).play())
+    gltf.animations.forEach(clip => this.mixer.clipAction(this._cutClip(clip)).play())
+  }
+
+  /** 只留前 / 後 playFrames 幀（裁掉其餘的幀，裁切點的值用內插補上） */
+  _cutClip(clip) {
+    if (!this.playFrames) return clip
+    const total = Math.round(clip.duration * this.clipFps)
+    const count = Math.abs(this.playFrames)
+    if (count >= total) return clip
+    const cut = total - count
+    return this.playFrames > 0 ? trimClip(clip, 0, cut, this.clipFps) : trimClip(clip, cut, 0, this.clipFps)
   }
 
   /** 提示文字：isUsing = 正坐著 */

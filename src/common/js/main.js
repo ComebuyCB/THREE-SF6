@@ -117,28 +117,30 @@ class FighterViewer {
       //   model 是 null = 沒有場景：只有影子地板與天空（自由模式限制在 ±halfWidth 的方框內）
       //   props = 放在場景裡的物件（世界座標，不跟 transform 移動）：
       //     { type: 'sit', url, position: [x, y, z], rotation（度）, scale, radius } 可以坐下的物件（sitSpot.js；自由模式靠近按 F）
+      //     playFrames = 動畫只循環一段：正數 = 前幾幀、負數 = 後幾幀（營火：最後 40 幀）
       //     { type: 'hide', url, position, facing（門朝的方向，度）, height } 可以躲進去的物件（hideSpot.js；實心，F 躲藏 / 離開）
+      //   place = '室外'（預設，影子跟著太陽、月亮）| '室內'（影子固定從上方照，不受時間天氣影響）
       scenes: {
         無: { model: null, halfWidth: 5 },
         庭院: { model: `${MODEL_DIR}/background/courtyard.glb`, ground: [0.0252, -0.0414, 0.6321], transform: { x: -0.3, y: -0.03, z: 4, rotation: 0, scale: 0.9 } },
         // 模型中央是房子與門口台階：往後移，人物站在房子前的空地，房子當背景
         閥門房: {
           model: `${MODEL_DIR}/background/bayard_station_valve_house.glb`, ground: [0.0013, -0.0167, 9.416], transform: { x: 1.5, y: -0.05, z: -8.1, rotation: 0, scale: 0.9 },
-          props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, position: [-4.5, 0, -2.5] }],
+          props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, playFrames: -40, position: [-4.5, 0, -2.5] }],
         },
         // 室內（天花板約 2.8 公尺）：模型裡 (-28, -1) 那塊大廳移到場地中心，打鬥線到鏡頭之間左右 7.5 公尺內沒有牆，背後牆約 3 公尺
         後室: {
-          model: `${MODEL_DIR}/background/backrooms_vr.glb`, ground: [0, 0, -0.12], transform: { x: 28, y: 0, z: 1, rotation: 0, scale: 1 },
+          model: `${MODEL_DIR}/background/backrooms_vr.glb`, ground: [0, 0, -0.12], transform: { x: 28, y: 0, z: 1, rotation: 0, scale: 1 }, place: '室內',
           props: [
-            { type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, position: [28, 0, 2] },
+            { type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, playFrames: -10, position: [28, 0, 2] },
             // 櫃子靠在打鬥場地後面的牆邊（牆約在 z = -3.3），門朝鏡頭（+z）
             { type: 'hide', url: `${MODEL_DIR}/items/locker_rough_texture.glb`, position: [3, 0, -2.9], facing: 0 },
           ],
         },
         // 後室 2：另一張後室地圖（條紋 / 點點壁紙、地毯）；模型原點那塊就是空地：左右 8.8 公尺、前 13 公尺、背後牆 3.6 公尺
-        後室2: { model: `${MODEL_DIR}/background/backrooms_vr2.glb`, ground: [0, 0, 0.01], transform: { x: 0, y: 0, z: 0, rotation: 0, scale: 1 } },
+        後室2: { model: `${MODEL_DIR}/background/backrooms_vr2.glb`, ground: [0, 0, 0.01], transform: { x: 0, y: 0, z: 0, rotation: 0, scale: 1 }, place: '室內' },
         // PSX 後室：PS1 風格的低面數後室；模型裡 (6, -22) 那塊移到場地中心：左右 9 公尺、前 16 公尺、背後牆 6 公尺，打鬥線到鏡頭之間沒有牆
-        PSX後室: { model: `${MODEL_DIR}/background/psx_-_backroom.glb`, ground: [0, 0, -0.34], transform: { x: -6, y: 0, z: 22, rotation: 0, scale: 1 } },
+        PSX後室: { model: `${MODEL_DIR}/background/psx_-_backroom.glb`, ground: [0, 0, -0.34], transform: { x: -6, y: 0, z: 22, rotation: 0, scale: 1 }, place: '室內' },
       },
       // 天空（GUI 可切換）：procedural = 程式畫的動態天空（skyDome.js）；其餘是 2:1 全景圖，當作無限遠的背景，3D 場景沒擋住的地方看得到
       skies: {
@@ -327,7 +329,6 @@ class FighterViewer {
       fogFar: 70,
       // 黑暗霧（取代地平線霧）：以中心點為圓心，開始 ~ 全暗（公尺）之間漸暗；天空變暗 0 ~ 1；人物不受影響
       darkFog: false,
-      darkFogCenter: '鏡頭', // 鏡頭 / 人物（自由模式 = 鏡頭跟隨的人，格鬥模式 = P1）
       darkFogNear: 4,
       darkFogFar: 14,
       darkFogSky: 1,
@@ -347,8 +348,7 @@ class FighterViewer {
       cameraCollision: false, // 鏡頭避開物體（B）：注視點和鏡頭之間被場景擋住時，鏡頭拉近到物體前面
       showXray: true, // 透視剪影（X）：鏡頭跟隨的人（自由模式跟隨的人、格鬥模式 P1）被場景擋住時，畫出剪影
       showFrameMeter: true, // 幀數表 + 連段傷害顯示（P）
-      showCombo: true, // 連段數顯示
-      showSkeleton: false,
+      place: '室外', // 室內 / 室外（換場景時照場景設定的 place）
     }
 
     // 5. init
@@ -482,19 +482,16 @@ class FighterViewer {
     this.guiControllers?.showXray.updateDisplay()
   }
 
-  /** 連段數顯示 / 隱藏（GUI「顯示連段數」） */
-  _setComboVisible(isVisible) {
-    this.params.showCombo = isVisible
-    document.querySelectorAll('.index_combo').forEach(el => el.classList.toggle('is_uiHide', !isVisible))
-  }
-
-  /** 除錯顯示（O、GUI「顯示除錯」）：X 軸刻度尺與座標、判定框、左右邊界牆一起 */
+  /** 除錯顯示（O、GUI）：X 軸刻度尺與座標、判定框、左右邊界牆、骨架一起 */
   _setDebugVisible(isVisible) {
     this.params.showDebug = isVisible
     this.stage.setRulerVisible(isVisible)
     this.stage.setWallsVisible(isVisible)
     this.hud.setCoordsVisible(isVisible)
-    ;[this.p1, this.p2].filter(Boolean).forEach(f => f.setDebugVisible(isVisible))
+    ;[this.p1, this.p2].filter(Boolean).forEach(f => {
+      f.setDebugVisible(isVisible)
+      f.setSkeletonVisible(isVisible)
+    })
     this.guiControllers?.showDebug.updateDisplay()
   }
 
@@ -609,7 +606,7 @@ class FighterViewer {
       moveSet: config.moveSet, // 人物自己的招式表（moveSets.js extendMoveSet）；沒填用預設
       moveSpeed: this.params.moveSpeed,
       showDebug: this.params.showDebug,
-      showSkeleton: this.params.showSkeleton,
+      showSkeleton: this.params.showDebug, // 骨架跟著除錯顯示（O）
     })
     this.params[slot] = name
     if (slot === 'p1') {
@@ -671,12 +668,27 @@ class FighterViewer {
    * 場景模型換好了：場地寬度（場景的牆）、自由模式的擋牆；地面自己會接影子，影子地板先藏起來（疊在一起會有兩層影子）
    * 沒有場景模型：影子地板照 GUI 設定
    */
-  _onSceneModel(model) {
+  _onSceneModel(model, entry) {
+    this._setPlace(entry?.place ?? '室外')
     if (this.stage) {
       this._applyStageWidth()
       this.stage.setGroundVisible(!model && this.params.showGround)
     }
     if (this.freeMode?.isActive) this.freeMode.setEnv(model)
+  }
+
+  /** 室內 / 室外（場景設定的 place，GUI 也可以改）：室外影子跟著太陽，室內固定從上方照 */
+  _setPlace(place) {
+    this.params.place = place
+    this.atmosphere.setIndoor(place === '室內')
+  }
+
+  /** 影子範圍的中心：自由模式跟著鏡頭跟隨的人，格鬥模式在場地中心 */
+  _getShadowFocus() {
+    const fm = this.freeMode
+    const f = fm?.isActive ? this[fm.followSlot] : null
+    const focus = (this.shadowFocus ??= new THREE.Vector3())
+    return f ? focus.set(f.model.position.x, f.groundY, f.model.position.z) : focus.set(0, 0, 0)
   }
 
   /**
@@ -734,15 +746,13 @@ class FighterViewer {
     this.sky.setDarkFog({ enabled: darkFog, near: darkFogNear, far: Math.max(darkFogNear + 0.1, darkFogFar), skyDarken: darkFogSky, color: darkFogColor })
   }
 
-  /** 黑暗霧的中心：鏡頭，或人物胸口（自由模式 = 鏡頭跟隨的人，格鬥模式 = P1） */
+  /** 黑暗霧的中心：人物胸口（自由模式 = 鏡頭跟隨的人，格鬥模式 = P1） */
   _updateDarkFogCenter() {
     if (!this.params.darkFog) return
+    // 中心在人物身上（自由模式 = 鏡頭跟隨的人，格鬥模式 = P1）；還沒有人物時用鏡頭
     const fighter = this.freeMode.isActive ? this[this.freeMode.followSlot] : this.p1
-    if (this.params.darkFogCenter === '人物' && fighter) {
-      this.sky.setFogCenter(fighter.model.position.clone().setY(fighter.model.position.y + 1))
-      return
-    }
-    this.sky.setFogCenter(this.camera.position)
+    if (fighter) this.sky.setFogCenter(fighter.model.position.clone().setY(fighter.model.position.y + 1))
+    else this.sky.setFogCenter(this.camera.position)
   }
 
   /**
@@ -833,6 +843,7 @@ class FighterViewer {
       el: this.stageEl,
       skies: this.skies,
       skyOptions: { rotation: skyRotation, cloudCover, horizonFog: { enabled: horizonFog, near: fogNear, far: fogFar } },
+      atmosphere: { isRunning: true, speed: 8, nightBright: 1 }, // 時間預設會流動，每秒過 8 分鐘；晚上人物跟場景一樣亮
       scenes: this.scenes,
       lights: { shadowHalfWidth: this.stageHalfWidth + 2 }, // 陰影範圍涵蓋整個場地寬度
       cameraShake: { duration: this.cameraShake.frames / FPS, frequency: this.cameraShake.frequency },
@@ -844,7 +855,8 @@ class FighterViewer {
         isCameraLocked: () => this._isCameraLocked(),
         isFisheye: () => this.freeMode?.isActive && this.freeMode.isFirstPerson, // 第一人稱的輕微魚眼
         skipCameraCollision: () => !!this.freeMode?.isFirstPerson, // 第一人稱鏡頭在眼睛，不用避開
-        onSceneModel: model => this._onSceneModel(model),
+        getShadowFocus: () => this._getShadowFocus(),
+        onSceneModel: (model, entry) => this._onSceneModel(model, entry),
         onPropsChange: () => this._syncPropColliders(),
         onLoadStart: name => !this.isLoading && this._showLoading(true, name),
         onProgress: (e, name) => this._onProgress(e, name),
@@ -999,20 +1011,23 @@ class FighterViewer {
   }
 
   _setupGui() {
+    // 最多兩層：控制台 → 群組 → 子群組
     const gui = new GUI({ title: 'Fighter 控制台' })
     this.gui = gui // \ 鍵重置所有設定（_resetGui）
     const names = this.characters.map(c => c.name)
-    const fighters = () => [this.p1, this.p2].filter(Boolean)
-
-    gui.add(this.params, 'p1', names).name('P1 角色').listen().onChange(v => this.setCharacter('p1', v))
-    gui.add(this.params, 'p2', names).name('P2 角色').listen().onChange(v => this.setCharacter('p2', v))
-    gui.add(this.params, 'p2Guard').name('P2 木樁防禦')
     this.guiControllers = {} // 快捷鍵改了數值時要更新顯示的控制項
+
+    gui.add({ reset: () => this._resetGui() }, 'reset').name('全部回到預設（\\）')
+
+    // 角色：選角、P2 設定、戰鬥數值（初始值、回復、傷害、補正各一個子群組）
+    const fighterFolder = gui.addFolder('角色')
+    fighterFolder.add(this.params, 'p1', names).name('P1 角色').listen().onChange(v => this.setCharacter('p1', v))
+    fighterFolder.add(this.params, 'p2', names).name('P2 角色').listen().onChange(v => this.setCharacter('p2', v))
+    fighterFolder.add(this.params, 'p2Guard').name('P2 木樁防禦')
     // P2 電腦難度：只改這一層；進下一層時照層數重新設定（1~3 簡單、4~6 中等、7~9 困難、10~ 極難）
     const levelOptions = Object.fromEntries(Object.entries(AI_LEVELS).map(([key, { name }]) => [name, key]))
-    this.guiControllers.p2AILevel = gui.add(this.params, 'p2AILevel', levelOptions).name('P2 電腦難度').onChange(v => this._setP2AILevel(v))
-
-    this._setupGaugeGui(gui)
+    this.guiControllers.p2AILevel = fighterFolder.add(this.params, 'p2AILevel', levelOptions).name('P2 電腦難度').onChange(v => this._setP2AILevel(v))
+    this._setupGaugeGui(fighterFolder)
 
     const skyFolder = gui.addFolder('背景（天空盒）').close() // 預設收起
     skyFolder.add(this.params, 'sky', Object.keys(this.skies)).name('天空').listen().onChange(v => this.setSky(v))
@@ -1032,13 +1047,13 @@ class FighterViewer {
     timeFolder.add(atmo, 'speed', 0, 240, 1).name('流速（分鐘 / 秒）')
     timeFolder.add(atmo, 'weather', Object.keys(WEATHERS)).name('天氣').onChange(v => atmo.setWeather(v))
     timeFolder.add(atmo, 'transition', 0, 10, 0.5).name('天氣過渡（秒）')
+    timeFolder.add(atmo, 'nightBright', 0, 1, 0.05).name('夜晚人物亮度').onChange(() => atmo.apply())
     timeFolder.add(atmo.lightning, 'enabled').name('閃電（雨天）')
     timeFolder.add(atmo, 'triggerLightning').name('打一次閃電')
     // 黑暗霧：離中心點越遠越暗，最後看不到
     const darkFolder = gui.addFolder('黑暗霧')
     const applyDark = () => this._applyDarkFog()
     darkFolder.add(this.params, 'darkFog').name('開啟').onChange(applyDark)
-    darkFolder.add(this.params, 'darkFogCenter', ['鏡頭', '人物']).name('中心')
     darkFolder.add(this.params, 'darkFogNear', 0, 40, 0.5).name('開始變暗（m）').onChange(applyDark)
     darkFolder.add(this.params, 'darkFogFar', 1, 80, 0.5).name('全暗（m）').onChange(applyDark)
     darkFolder.add(this.params, 'darkFogSky', 0, 1, 0.05).name('天空變暗').onChange(applyDark)
@@ -1046,6 +1061,7 @@ class FighterViewer {
 
     const sceneFolder = gui.addFolder('場景（3D 模組）').close()
     sceneFolder.add(this.params, 'scene', Object.keys(this.scenes)).name('3D 場景').listen().onChange(v => this.setScene(v))
+    sceneFolder.add(this.params, 'place', ['室外', '室內']).name('室內 / 室外（影子）').listen().onChange(v => this._setPlace(v))
     sceneFolder.add(this.params, 'envRotation', 0, 360, 1).name('轉動（度）').listen().onChange(() => this._applyEnvTransform()).onFinishChange(() => this._applyStageWidth())
     sceneFolder.add(this.params, 'envOffsetX', -20, 20, 0.1).name('左右 X（m）').listen().onChange(() => this._applyEnvTransform()).onFinishChange(() => this._applyStageWidth())
     sceneFolder.add(this.params, 'envOffsetY', -0.5, 0.5, 0.01).name('高度 Y（m）').listen().onChange(() => this._applyEnvTransform()).onFinishChange(() => this._applyStageWidth())
@@ -1057,32 +1073,24 @@ class FighterViewer {
 
     sceneFolder.add(this.superCamera, 'dimLevel', 0, 1, 0.05).name('絕招時變暗到')
 
-    const playFolder = gui.addFolder('播放設定')
-    this.guiControllers.timeScale = playFolder.add(this.params, 'timeScale', 0, 2, 0.05).name('遊戲速度（- / =）')
-    this.pauseController = playFolder.add(this.params, 'paused').name('暫停（主鍵盤 0）')
-
-    const viewFolder = gui.addFolder('顯示')
+    const viewFolder = gui.addFolder('顯示 / 播放')
+    this.guiControllers.timeScale = viewFolder.add(this.params, 'timeScale', 0, 2, 0.05).name('遊戲速度（- / =）')
+    this.pauseController = viewFolder.add(this.params, 'paused').name('暫停（主鍵盤 0）')
     this.guiControllers.showFrameMeter = viewFolder.add(this.params, 'showFrameMeter').name('顯示幀數表 + 連段傷害（P）').onChange(v => this._setFrameMeterVisible(v))
-    viewFolder.add(this.params, 'showCombo').name('顯示連段數').onChange(v => this._setComboVisible(v))
     this.guiControllers.showXray = viewFolder.add(this.params, 'showXray').name('被擋住時透視角色（X）')
     this.guiControllers.cameraCollision = viewFolder.add(this.params, 'cameraCollision').name('鏡頭避開物體（B）').onChange(v => this._setCameraCollision(v))
-    this.guiControllers.showDebug = viewFolder.add(this.params, 'showDebug').name('顯示除錯：座標、判定框、邊界牆（O）').onChange(v => this._setDebugVisible(v))
+    this.guiControllers.showDebug = viewFolder.add(this.params, 'showDebug').name('座標、判定框、邊界牆、骨架（O）').onChange(v => this._setDebugVisible(v))
     const fisheyeFolder = viewFolder.addFolder('第一人稱魚眼').close()
     fisheyeFolder.add(this.fisheye, 'fov', 45, 140, 1).name('視角（度）').onChange(() => this.fisheye.refresh())
     fisheyeFolder.add(this.fisheye, 'strength', 0, 0.6, 0.01).name('扭曲強度')
-    const debugFolder = viewFolder
-    debugFolder.add(this.params, 'showSkeleton').name('顯示骨架').onChange(v => {
-      fighters().forEach(f => f.setSkeletonVisible(v))
-    })
   }
 
   /**
-   * GUI「戰鬥數值」：血量 / 量條的初始值與回復速度、命中 / 被防禦時的增減（點）
+   * GUI「角色」裡的戰鬥數值：血量 / 量條的初始值與回復速度、命中 / 被防禦時的增減（點）
    * 量條設定改 P1 的 Gauge 並同步到 P2；命中數值直接改 Combat.gaugeRules（雙方共用）
    * 初始值（血量上限、初始格數）按「重置血量與量條」或換人物後才生效
    */
-  _setupGaugeGui(gui) {
-    const folder = gui.addFolder('戰鬥數值')
+  _setupGaugeGui(folder) {
     const { p1, p2 } = this.combat.gauges
     const rules = this.combat.gaugeRules
     const addGauge = (target, key, name, min, max, step) => {
@@ -1714,6 +1722,7 @@ class FighterViewer {
     this.hud.update(realDelta)
     this.hud.updateGauges(this.combat.gauges)
     this.hud.updateComboDebug(this.combat.comboStats)
+    this.hud.updateGameSpeed(this.params.timeScale, this.params.paused)
     this._updateDarkFogCenter()
     this._updateFighterFog()
     this._updateProps(gameDelta)

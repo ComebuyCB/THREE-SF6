@@ -28,6 +28,7 @@ import { CameraDrag } from '../camera/cameraDrag.js'
  *   isCameraLocked() → 鏡頭由程式控制中（OrbitControls 不更新、拖曳由 cameraDrag 處理）
  *   isFisheye() → 這個畫面要不要魚眼（例如第一人稱）
  *   skipCameraCollision() → 這個畫面鏡頭不用避開物體（例如第一人稱）
+ *   getShadowFocus() → Vector3：影子範圍的中心（例如鏡頭跟隨的人）；沒給 = 原點
  *   onSceneModel(model, entry)、onPropsChange(props)：場景模型 / 物件換好時
  *   onLoadStart(name)、onProgress(event, name)、onLoadEnd(name)：場景模型載入進度
  */
@@ -39,6 +40,7 @@ export class GameCore {
       maxDelta: 0.1, // 一個畫面最多算幾秒（切分頁回來時不會一次補太多）
       skies: {}, // 天空設定（見 Sky）
       skyOptions: { rotation: 0, cloudCover: 0.5, horizonFog: { enabled: true, near: 15, far: 70 } }, // Sky 的設定
+      atmosphere: {}, // Atmosphere 的設定（例如 time、isRunning、speed、weather）
       scenes: {}, // 場景設定（見 Environment）
       view: { fov: 45, near: 0.1, far: 100, position: [0, 1.4, 4.5], target: [0, 1, 0] }, // 鏡頭的視角與一開始的位置、注視點
       // 基本燈光：環境光、主光（會投影；陰影範圍 shadowHalfWidth × shadowHalfHeight 公尺）
@@ -52,6 +54,7 @@ export class GameCore {
         isCameraLocked: null,
         isFisheye: null,
         skipCameraCollision: null,
+        getShadowFocus: null,
         onSceneModel: null,
         onPropsChange: null,
         onLoadStart: null,
@@ -117,6 +120,8 @@ export class GameCore {
     this.lights.hemiLight.intensity = this.lightBase.hemi * dim
     this.lights.dirLight.intensity = this.lightBase.dir * dim
     this.sky.setIntensity(dim)
+    // 烘焙光影的場景上的影子：主光越弱越淡（晚上、陰天），主光跟中午太陽一樣亮時最深
+    this.environment.setShadowStrength(Math.min(1, this.lights.dirLight.intensity / this.lights.dir))
   }
 
   resize() {
@@ -179,7 +184,7 @@ export class GameCore {
     dirLight.shadow.camera.right = shadowHalfWidth
     dirLight.shadow.camera.top = shadowHalfHeight
     dirLight.shadow.camera.bottom = -shadowHalfHeight
-    this.scene.add(hemiLight, dirLight)
+    this.scene.add(hemiLight, dirLight, dirLight.target) // target 放進場景才會更新位置（影子範圍跟著焦點）
     this.lights.hemiLight = hemiLight
     this.lights.dirLight = dirLight
 
@@ -190,6 +195,7 @@ export class GameCore {
       hemi: hemiLight,
       sun: dirLight,
       cloudCover: this.skyOptions.cloudCover,
+      ...this.atmosphere,
       getEnv: () => this.envModel, // 雨的落點、屋頂下不下雨
       onLights: base => {
         this.lightBase = base
@@ -214,6 +220,8 @@ export class GameCore {
     const gameDelta = h.getGameDelta ? h.getGameDelta(realDelta) : realDelta
 
     h.onUpdate?.(realDelta)
+    const focus = h.getShadowFocus?.()
+    if (focus) this.atmosphere.setFocus(focus)
     if (!h.isCameraLocked?.()) this.controls.update()
     this.sky.update(realDelta, this.camera)
     this.atmosphere.update(gameDelta, this.camera)

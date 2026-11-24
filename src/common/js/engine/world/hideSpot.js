@@ -19,7 +19,7 @@ export class HideSpot extends InteractiveProp {
     facing: 0, // 門朝世界的哪個方向（度，0 = +z、90 = +x；同人物的 rotation.y），會自動轉過去（rotation 不用填）
     openTime: 0.81, // 動畫裡門完全打開的時間（秒）
     frontGap: 0.55, // 門前站的位置離櫃子正面多遠（公尺）
-    promptY: 1.6, // 按鍵提示在櫃子正面中間、離地多高（公尺，大約眼睛的高度）
+    promptY: 0.8, // 按鍵提示在櫃子正面中間、離地多高（公尺；櫃子 2.1 公尺，中間偏下）
   }
 
   /** 互動種類（main.js 依這個決定按 F 做什麼） */
@@ -76,7 +76,7 @@ export class HideSpot extends InteractiveProp {
     return Math.hypot(p.x - this.frontPoint.x, p.z - this.frontPoint.z) <= this.radius
   }
 
-  /** 按鍵提示：櫃子正面中間、離地 promptY（大約眼睛的高度） */
+  /** 按鍵提示：櫃子正面中間、離地 promptY（中間偏下） */
   getPromptPoint(target = new THREE.Vector3()) {
     target.copy(this.frontFace)
     target.y += this.promptY
