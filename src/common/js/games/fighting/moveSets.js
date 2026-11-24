@@ -82,9 +82,10 @@
  *   height：同時往上跳成拋物線，最高 height 公尺，第 to 幀剛好落地（不算空中狀態，被打斷時直接回到地面）
  *   afterFreeze：絕招演出凍結期間（拉近 + 停留）不移動，從鏡頭拉遠（遊戲恢復）的第一幀起到第 to 幀走完 distance
  *   toOpponent：不看 distance，開始移動的那一幀量到對手的距離，一路衝到對手面前（停在 lock.distance，沒有就推擠框貼齊），不限距離
- * missCut：{ judge, after, jumpTo, soundAfter } 揮空時提早收招：第 judge 個攻擊判定（1 起算；'grab' = 抓取判定）結束時還沒打中 / 抓到（被防禦也算），
+ * missCut：{ judge, after, jumpTo, length, soundAfter } 揮空時提早收招：第 judge 個攻擊判定（1 起算；'grab' = 抓取判定）結束時還沒打中 / 抓到（被防禦也算），
  *   照原動畫再播 after 幀（後續，沒填 = 0），然後跳到第 jumpTo 幀（幀數表編號）播到最後（結尾）；確定揮空起不再有攻擊判定
  *   播放順序：攻擊 → 後續 after 幀 → 結尾（jumpTo ~ 最後一幀）
+ *   length：揮空時這招到第 length 幀就結束（幀數表編號）；可以只填這個、不填 jumpTo = 照原動畫播到那裡結束
  *   soundAfter：音效另外算，確定揮空後再播幾幀就中斷這招的音效（可以比 after 長，跳到結尾後繼續算）；沒填 = 音效不中斷
  * invincible：true = 從出招到第一次攻擊判定（含抓取判定）出現前全程無敵；沒填 = 沒有無敵
  * invincibleFrames：這招前幾幀無敵，不會因為攻擊判定開始而提早結束（要比 invincible 更長時才填）
@@ -230,6 +231,7 @@ export const BASE_MOVE_SET = {
       hitDamage: 4000,
       gauge: { hit: { dg: 0, oppDg: 0, sg: 0, oppSg: 0 }, block: { dg: 0, oppDg: 0, sg: 0, oppSg: 0 } },
       rootMotion: true,
+      missCut: { judge: 'grab', length: 166 }, // 沒抓到：第 166 幀結束
       hitBones: ['LeftFoot', 'RightFoot'],
       sounds: [{ name: 'kick_ball_title', frame: 1 }],
     },

@@ -7,13 +7,40 @@
  * - 難度：setLevel('easy' | 'normal' | 'hard' | 'expert')，見 AI_LEVELS
  */
 
-// 連段路線：第一招打中後依第一招選路線；'rush' = 按 0 衝刺取消、'super' = 絕招、'TC_…' = 衍生攻擊（按衍生鍵，moveSets.js tc 的 by）
-const COMBOS = [
-  ['heavy', 'rush', 'heavy', 'TC_HH', 'rush', 'medium', 'light', 'rush', 'light', 'light', 'light', 'super'],
-  ['medium', 'medium', 'rush', 'medium', 'medium', 'rush', 'heavy', 'TC_HH', 'super'],
-  ['light', 'light', 'light', 'rush', 'light', 'light', 'light', 'super'],
-  ['light', 'light', 'rush', 'light', 'medium', 'rush', 'medium', 'heavy', 'super'],
+/**
+ * 連段路線：第一招打中後，從第一步符合的路線裡隨機挑一條，一步一步照著接
+ * 每一步可以寫：
+ *   'light' / 'medium' / 'heavy' = 拳、'TC_…' = 衍生攻擊（按衍生鍵，moveSets.js tc 的 by）、'DI' = 動力衝擊、'rush' = 衝刺取消（耗 DG）
+ *   絕招的 key（例如 'dog_bear'）= 固定出那一招；'super' = 從 COMBO_SUPERS 挑一招
+ *   陣列 = 多選，走到這一步時從裡面隨機挑一個，例如 ['dodge_step', 'shake_head']、['light', 'medium']
+ * 挑的時候會先排除現在不能出的（SG 不夠的絕招、前一招接不到的 TC）；都不能出就停在那裡
+ */
+const COMBO_SUPERS = ['dodge_step', 'dog_bear'] // 'super' 可以用的絕招（這兩招接在任何拳後面都打得到）
+export const COMBOS = [
+  // 重攻擊起手
+  ['heavy', ['super', 'wind_step']],
+  ['heavy', 'rush', 'heavy', 'TC_HH', 'rush', 'heavy', 'TC_HH', 'super'],
+  ['heavy', 'TC_HH', 'rush', 'heavy', 'TC_HH', 'super'],
+  ['heavy', 'TC_HH', 'rush', 'medium', 'medium', 'super'],
+  ['heavy', 'TC_HH', 'TC_HHH', 'dog_bear'],
+  // 中攻擊起手
+  ['medium', ['super', 'wind_step']],
+  ['medium', 'medium', ['super', 'wind_step']],
+  ['medium', 'medium', 'rush', 'heavy', 'TC_HH', ['TC_HHH', 'super']],
+  ['medium', 'rush', 'medium', 'medium', 'rush', 'heavy', ['super', 'shake_head']],
+  ['medium', 'medium', 'rush', 'light', 'kick_ball'],
+  // 輕攻擊起手
+  ['light', 'light', ['super', 'wind_step', 'shake_head']],
+  ['light', 'light', 'rush', 'medium', ['super', 'wind_step', 'shake_head']],
+  ['light', 'light', 'rush', 'light', 'light', 'light', 'light', 'super'],
+  ['light', 'rush', 'medium', 'medium', 'rush', 'heavy', 'TC_HH', ['TC_HHH', 'super']],
+  ['light', 'rush', 'light', 'medium', 'medium', 'rush', 'heavy', 'shake_head'],
+  // 動力衝擊打中出招中的對手（倒地中追打）
+  ['DI', 'heavy', 'TC_HH', 'TC_HHH', 'dog_bear'],
+  ['DI', 'heavy', 'TC_HH', 'rush', 'heavy', ['super', 'shake_head']],
 ]
+
+const toList = item => (Array.isArray(item) ? item : [item])
 
 /**
  * 難度（setLevel）：覆蓋下面 def 的同名設定
@@ -97,7 +124,7 @@ export class FighterAI {
       attackRate: 0.35, // 在出拳距離內、每次做決定時出拳的機率
       rawSuperRate: 0.03, // 在出拳距離內直接放絕招的機率
       jumpInRate: 0.08, // 中距離跳入的機率
-      supers: ['dog_bear', 'shake_head', 'kick_ball', 'dodge_step'], // 連段 / 直接放用的絕招（kick_ball 是抓取，不放進連段）
+      supers: ['dog_bear', 'shake_head', 'kick_ball', 'dodge_step'], // 不在連段中（直接放、抓破綻）用的絕招；連段用的見 COMBOS、COMBO_SUPERS
       canSuper: () => true, // (key) → 現在 SG 夠不夠放這招絕招（沒給 key = 夠不夠 1 格；main.js 提供）
       getGauges: () => null, // () => { self, opp }：雙方的 Gauge（gaugeAware 用；main.js 提供）
       killHp: 2500, // gaugeAware：對手血量低於這個值，連段改接絕招收尾
@@ -336,7 +363,7 @@ export class FighterAI {
         const [near, far] = this._getWindow('heavy')
         if (dist >= near && dist <= far) {
           this.superPunish = null
-          this.forceRoute = COMBOS.find(c => c[0] === 'heavy')
+          this.forceRoute = COMBOS.find(c => toList(c[0]).includes('heavy'))
           out.attack = 'heavy'
         } else {
           out.move = dist < near ? -toward : toward
@@ -549,6 +576,19 @@ export class FighterAI {
     return inRange.find(k => (r -= weights[k]) <= 0) || inRange[inRange.length - 1]
   }
 
+  /** 連段的一步（字串或多選陣列）→ 現在能出的招式裡隨機挑一個；'rush' 原樣回傳，都不能出 = null */
+  _pickStep(self, item) {
+    const keys = toList(item).flatMap(key => (key === 'super' ? COMBO_SUPERS : [key]))
+    const list = keys.filter(key => {
+      if (key === 'rush') return true
+      const move = self.moves[key]
+      if (!move || !self.actions[key]) return false
+      if (move.category === 'tc') return !!self.derives[self.currentMove]?.some(d => d.to === key)
+      return !move.isSuper || this.canSuper(key)
+    })
+    return list.length ? pick(list) : null
+  }
+
   /** 隨機挑一個這個人物有動作、SG 夠的絕招；沒有 = null */
   _pickSuper(self) {
     const list = this.supers.filter(k => self.actions[k] && self.moves[k] && this.canSuper(k))
@@ -563,10 +603,12 @@ export class FighterAI {
     // 開始：拳打中（不是被防禦）的第一幀
     if (!this.combo && self.state === 'attack' && self.hitConfirmed && this.comboFrom !== self) {
       // 防禦絕招後的重拳反擊（forceRoute）：一定接連段、走指定路線
-      const forced = this.forceRoute?.[0] === self.currentMove ? this.forceRoute : null
-      const route = forced ? [forced] : COMBOS.filter(c => c[0] === self.currentMove)
-      if (route.length && (forced || Math.random() < this.comboRate)) {
-        this.combo = { route: pick(route), step: 1, pressedStep: 0, idle: 0, superKey: this._pickSuper(self) ?? this.whiffSuperMove }
+      const isStart = c => toList(c[0]).includes(self.currentMove)
+      const forced = this.forceRoute && isStart(this.forceRoute) ? this.forceRoute : null
+      const isReachable = self.currentMove !== 'DI' || opp.isCrumpling // 動力衝擊只有對手倒地時追得到，打飛就不接
+      const routes = forced ? [forced] : isReachable ? COMBOS.filter(isStart) : []
+      if (routes.length && (forced || Math.random() < this.comboRate)) {
+        this.combo = { route: pick(routes), step: 1, key: null, pressedStep: 0, idle: 0 } // key：這一步選定的招式
       }
       this.forceRoute = null
       this.comboFrom = self // 同一下命中只判斷一次（回到非出招狀態時清掉）
@@ -576,11 +618,11 @@ export class FighterAI {
     if (!combo) return false
 
     // 前進到下一步：衝刺取消開始了、或下一招開始了
-    const item = combo.route[combo.step]
-    const key = item === 'super' ? combo.superKey : item
     const prevStep = combo.step
-    if (item === 'rush' && self.isRushing) combo.step++
-    else if (item !== 'rush' && selfStarted && self.currentMove === key) combo.step++
+    if (combo.key === 'rush' ? self.isRushing : selfStarted && self.currentMove === combo.key) {
+      combo.step++
+      combo.key = null
+    }
     // 簡單難度：每往下一步有 comboDropRate 機率直接放棄連段
     if (combo.step !== prevStep && Math.random() < this.comboDropRate) {
       this.combo = null
@@ -591,35 +633,33 @@ export class FighterAI {
     const isBroken = ['hit', 'block', 'down'].includes(self.state)
       || (self.state === 'attack' && self.connected && !self.hitConfirmed)
       || combo.step >= combo.route.length
-      || !key
     combo.idle = self.canAct ? combo.idle + 1 : 0
     if (isBroken || combo.idle > 4) {
       this.combo = null
       return false
     }
 
-    if (combo.pressedStep === combo.step) return true // 這一步已經按過了，等它開始
+    // 這一步已經按過了，等它開始；這一招不能預約下一招（例如動力衝擊）的話，快結束時再按一次
+    if (combo.pressedStep === combo.step && (combo.key === 'rush' || self.framesUntilFree > 6)) return true
 
-    // gaugeAware：對手血量低、絕招量條夠 → 下一步直接接絕招收尾（衝刺取消那一步不能直接接，跳過）
-    const gauges = this.getGauges()
-    if (this.gaugeAware && gauges && combo.superKey && combo.route[combo.step] !== 'super' && combo.route[combo.step] !== 'rush'
-      && gauges.opp.hp <= this.killHp && this.canSuper(combo.superKey)) {
-      combo.route = [...combo.route.slice(0, combo.step), 'super']
+    // 這一步要出哪一招：走到這一步時挑一次
+    if (!combo.key) {
+      combo.key = this._pickStep(self, combo.route[combo.step])
+      // gaugeAware：對手血量低、絕招量條夠 → 直接接絕招收尾（衝刺取消那一步不能直接接，跳過）
+      const gauges = this.getGauges()
+      const finisher = this.gaugeAware && gauges && gauges.opp.hp <= this.killHp && combo.key !== 'rush' ? this._pickStep(self, 'super') : null
+      if (finisher) {
+        combo.key = finisher
+        combo.route = [...combo.route.slice(0, combo.step), finisher]
+      }
+      // gaugeAware：動力槽不夠衝刺取消（會產生虛血、扣血）→ 連段停在這裡
+      const isDgShort = this.gaugeAware && gauges && combo.key === 'rush' && gauges.self.dg < gauges.self.barSize * gauges.self.rushBars
+      if (!combo.key || isDgShort) {
+        this.combo = null
+        return false
+      }
     }
-    // gaugeAware：動力槽不夠衝刺取消（會產生虛血、扣血）→ 連段停在這裡
-    if (this.gaugeAware && gauges && combo.route[combo.step] === 'rush' && gauges.self.dg < gauges.self.barSize * gauges.self.rushBars) {
-      this.combo = null
-      return false
-    }
-
-    const next = combo.route[combo.step]
-    const nextKey = next === 'super' ? combo.superKey : next
-
-    // SG 不夠：連段停在 SA 前
-    if (next === 'super' && !this.canSuper(combo.superKey)) {
-      this.combo = null
-      return false
-    }
+    const next = combo.key
 
     if (next === 'rush') {
       // 衝刺取消：打中後、招式還沒結束
@@ -629,12 +669,12 @@ export class FighterAI {
       }
     } else if (self.isRushing) {
       // 衝刺取消中：直接按（前幾幀不能出招時 Fighter 會先記住）
-      out.attack = nextKey
+      out.attack = next
       combo.pressedStep = combo.step
-    } else if (self.state === 'attack' && self.hitConfirmed) {
+    } else if (self.canAct || (self.state === 'attack' && self.hitConfirmed)) {
       // 攻擊取消：打中後馬上按下一招（命中當下還在預約時段內；過了的話由收招預約在招式結束時接上）；衍生攻擊按衍生鍵
-      const derive = self.derives[self.currentMove]?.find(d => d.to === nextKey)
-      out.attack = derive?.by[0] ?? nextKey
+      const derive = self.derives[self.currentMove]?.find(d => d.to === next)
+      out.attack = derive?.by[0] ?? next
       combo.pressedStep = combo.step
     }
     return true

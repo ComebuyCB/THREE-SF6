@@ -2070,6 +2070,7 @@ export class Fighter {
   /**
    * missCut：指定的攻擊判定（或抓取判定）結束時還沒打中 / 抓到 → 照原動畫再播 after 幀（後續）→ 跳到第 jumpTo 幀播到最後（結尾）
    * 被防禦也算沒打中；確定揮空起不再有攻擊判定，跳過去後不再前進（advance 跳過的距離不補）
+   * length：揮空時這招到第 length 幀就結束（沒填 jumpTo = 照原動畫播到那裡）
    * 音效另外算：確定揮空後再播 soundAfter 幀就中斷（跟動畫跳不跳無關；沒填 = 不中斷）
    */
   _checkMissCut() {
@@ -2083,6 +2084,7 @@ export class Fighter {
       if (isGrab ? this.hasGrabbed : this.hitConfirmed) return
       this.isMissCut = true // 確定揮空：之後算收招
       this.missFrames = 0
+      if (m.length) this.stateLength = Math.min(this.stateLength, m.length + (move.firstPassDelay ?? 0)) // 揮空時提早結束
     }
     this.missFrames++ // 確定揮空後第幾幀（1 起算）；動畫跳過去之後照樣累計
     // 音效中斷：揮空後第 soundAfter + 1 幀停掉這招的音效（Combat 看到 isMissSoundCut 後處理）
@@ -2092,7 +2094,7 @@ export class Fighter {
     }
     if (this.isMissCutDone || this.missFrames <= (m.after ?? 0)) return // 後續：照原動畫再播 after 幀
     this.isMissCutDone = true
-    if (this.moveFrame >= m.jumpTo) return
+    if (m.jumpTo == null || this.moveFrame >= m.jumpTo) return
     const delay = move.firstPassDelay ?? 0
     this.stateFrame = m.jumpTo - 1 + delay // moveFrame = jumpTo
     this.currentAction.time = this.stateFrame / FPS
