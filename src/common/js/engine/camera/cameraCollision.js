@@ -4,7 +4,7 @@ import { Terrain } from '../world/terrain.js'
 /**
  * CameraCollision：鏡頭避開物體（跟玩法無關）
  * 渲染前從注視點往鏡頭發射線，被場景模型擋住就把鏡頭拉近到擋住的地方前面（留 margin，最近 minDist）
- * 擋住時立刻拉近（不會穿進物體），沒擋住時慢慢退回原本的距離；渲染後 restore 還原，OrbitControls 的距離不變
+ * 擋住時慢慢拉近（pullSpeed）、沒擋住時慢慢退回原本的距離（returnSpeed）；渲染後 restore 還原，OrbitControls 的距離不變
  */
 export class CameraCollision {
   constructor(options) {
@@ -14,6 +14,7 @@ export class CameraCollision {
       getEnv: null, // () → 場景模型（null = 不用避開）
       margin: 0.25, // 離物體留多遠（公尺）
       minDist: 0.6, // 最近拉到多近（公尺）
+      pullSpeed: 6, // 被擋住時拉近的快慢（越大越快；Infinity = 立刻拉近，不會穿進物體）
       returnSpeed: 4, // 沒擋住時退回原本距離的快慢
     }
 
@@ -69,8 +70,10 @@ export class CameraCollision {
     const hit = ray.intersectObject(env, true).find(item => item.object.visible)
     const goal = hit ? Math.max(this.minDist, hit.distance - this.margin) : full
 
+    // 拉近、退回都平滑靠近目標距離（指數趨近，跟畫面更新率無關）
     this.dist = Math.min(this.dist, full)
-    this.dist = goal < this.dist ? goal : this.dist + (goal - this.dist) * Math.min(1, delta * this.returnSpeed)
+    const speed = goal < this.dist ? this.pullSpeed : this.returnSpeed
+    this.dist += (goal - this.dist) * (1 - Math.exp(-speed * delta))
     if (this.dist >= full - 1e-3) return
     this.savedPos.copy(this.camera.position)
     this.camera.position.copy(target).addScaledVector(dir, this.dist)

@@ -17,6 +17,9 @@ export class PointerLook {
       onLook: null, // (dx, dy)
       onButton: null, // (button)
       isBlocked: null, // () → 暫時不處理滑鼠（例如過場中）
+      // () → 鎖定被使用者放開（按 Esc、切換視窗），不是 unlock / setEnabled(false) 放開的
+      //   Chrome 鎖定中按 Esc 只會放開鎖定，網頁收不到 keydown，要靠這個知道使用者按了 Esc
+      onLost: null,
       maxStep: 250, // 單筆滑鼠移動超過幾像素就當成錯誤數值丟掉
     }
 
@@ -36,6 +39,7 @@ export class PointerLook {
     this.isEnabled = false
     this.savedButtons = null // OrbitControls 原本的滑鼠設定
     this.isFreshLock = false // 剛鎖定：下一筆移動丟掉
+    this.isReleasing = false // 程式自己放開鎖定中（不算 onLost）
 
     // 5. init
     this.init()
@@ -71,7 +75,13 @@ export class PointerLook {
       this.onLook?.(dx, dy)
     })
     document.addEventListener('pointerlockchange', () => {
-      if (this.isLocked) this.isFreshLock = true
+      if (this.isLocked) {
+        this.isFreshLock = true
+        return
+      }
+      const isUser = !this.isReleasing
+      this.isReleasing = false
+      if (isUser && this.isEnabled) this.onLost?.()
     })
   }
 
@@ -95,12 +105,14 @@ export class PointerLook {
       return
     }
     if (buttons && this.savedButtons) Object.assign(buttons, this.savedButtons)
-    if (this.isLocked) document.exitPointerLock()
+    this.unlock()
   }
 
   /** 暫時放開滑鼠（游標出現，可以點 GUI）；點畫面會再鎖定 */
   unlock() {
-    if (this.isLocked) document.exitPointerLock()
+    if (!this.isLocked) return
+    this.isReleasing = true
+    document.exitPointerLock()
   }
 
   /** 鎖定滑鼠；失敗（例如剛按 Esc 放開）就等下次點畫面 */

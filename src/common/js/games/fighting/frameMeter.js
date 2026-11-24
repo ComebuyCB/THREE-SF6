@@ -1,7 +1,8 @@
 // invincible：絕招開頭的無敵幀，顯示跟倒地一樣的白色，但算在招式的全體幀數裡
 // frozen：絕招演出停留期間的前搖（只是凍結狀態下播出的動畫），綠色虛線，也算在招式的全體幀數裡
+// armor：霸體（動力衝擊前搖），紫色，算在招式的全體幀數裡
 // grab：抓技判定（招式 grab.from ~ to），咖啡色，算在招式的全體幀數裡
-const TYPES = ['startup', 'active', 'recovery', 'stun', 'block', 'dash', 'down', 'invincible', 'frozen', 'grab', 'prejump', 'air', 'landing']
+const TYPES = ['startup', 'active', 'recovery', 'stun', 'block', 'dash', 'down', 'invincible', 'armor', 'frozen', 'grab', 'prejump', 'air', 'landing']
 const JUMP_TYPES = ['prejump', 'air', 'landing'] // 跳躍：起跳前 / 滯空 / 落地硬直，另外統計
 const RULER_STEP = 10 // 刻度每幾格標一次幀數
 
@@ -61,13 +62,15 @@ export class FrameMeter {
 
     this.rulerEl.innerHTML = '<span class="_mark"></span>'.repeat(this.length / RULER_STEP)
     this.marks = [...this.rulerEl.children]
+    this._setMarks(0, this.length, 0) // 還沒記錄時也顯示刻度的數字
+    this._renderInfo(true)
   }
 
   // public
 
   /**
    * 記錄 1 幀
-   * @param {Array<'startup' | 'active' | 'recovery' | 'stun' | 'block' | 'dash' | 'down' | 'invincible' | 'frozen' | 'grab' | 'prejump' | 'air' | 'landing' | null>} types 依 rows 順序（P1、P2）
+   * @param {Array<'startup' | 'active' | 'recovery' | 'stun' | 'block' | 'dash' | 'down' | 'invincible' | 'armor' | 'frozen' | 'grab' | 'prejump' | 'air' | 'landing' | null>} types 依 rows 順序（P1、P2）
    */
   record(types) {
     const isBusy = types.some(Boolean)
@@ -85,13 +88,14 @@ export class FrameMeter {
       this.index = 0
       this.stats = this.rows.map(() => ({ attackStart: -1, firstActive: -1, activeCount: 0, attackFrames: 0, lastBusy: -1, prejump: 0, air: 0, landing: 0 }))
       this.isRecording = true
+      this._renderInfo(true)
     }
 
     const pos = this.index % this.length
     const frame = this.index + 1
 
     // 快寫滿時先清掉前面，繞回第 1 格時才有空位
-    if (pos === this.length - this.clearAhead) this._clearRange(0, pos)
+    if (pos === this.length - this.clearAhead) this._clearRange(0, pos, this.index - pos + this.length)
 
     types.forEach((type, row) => {
       this._track(row, type)
@@ -103,21 +107,25 @@ export class FrameMeter {
 
     if (pos % RULER_STEP === 0) this.marks[pos / RULER_STEP].textContent = frame
 
-    this.infoEl.textContent = `記錄中…　第 ${frame}F`
     this.index++
   }
 
   // internal
 
-  /** 清掉 [start, end) 格與其刻度 */
-  _clearRange(start, end) {
+  /** 清掉 [start, end) 格，刻度換成接下來要寫的幀數（base = 這一輪第 1 格是第幾幀，0 起算） */
+  _clearRange(start, end, base = 0) {
     this.cells.forEach(row => {
       for (let i = start; i < end; i++) {
         row[i].classList.remove(...TYPES.map(t => `is_${t}`))
         row[i].removeAttribute('title')
       }
     })
-    for (let i = Math.ceil(start / RULER_STEP); i * RULER_STEP < end; i++) this.marks[i].textContent = ''
+    this._setMarks(start, end, base)
+  }
+
+  /** [start, end) 格的刻度數字 */
+  _setMarks(start, end, base) {
+    for (let i = Math.ceil(start / RULER_STEP); i * RULER_STEP < end; i++) this.marks[i].textContent = base + i * RULER_STEP + 1
   }
 
   _track(row, type) {
@@ -140,27 +148,23 @@ export class FrameMeter {
     }
   }
 
-  /** 結算：發生 / 持續 / 全體 / 硬直差（以 P1 視角，正數代表 P1 先能動） */
-  _renderInfo() {
-    const [p1, p2] = this.stats
-    const parts = [`共 ${this.index}F`]
-
-    if (p1.attackFrames) {
+  /**
+   * 發生 / 持續 / 全體 / 硬直差（以 P1 視角，正數代表 P1 先能動）：記錄停止時結算，沒有的項目寫 --
+   * isEmpty：還沒記錄 / 記錄中，全部寫 --
+   */
+  _renderInfo(isEmpty = false) {
+    const [p1, p2] = isEmpty ? [] : this.stats
+    const has = isEmpty ? {} : { attack: p1.attackFrames > 0, active: p1.firstActive >= 0, both: p1.lastBusy >= 0 && p2.lastBusy >= 0 }
+    const advantage = has.both ? p2.lastBusy - p1.lastBusy : 0
+    const items = [
+      ['共', isEmpty ? null : this.index],
       // 快打的「發生」是第一個攻擊判定幀的編號，所以前搖 5 幀 = 發生 6F
-      if (p1.firstActive >= 0) parts.push(`發生 ${p1.firstActive - p1.attackStart + 1}F`, `持續 ${p1.activeCount}F`)
-      parts.push(`全體 ${p1.attackFrames}F`)
-    }
-
-    if (p1.prejump || p1.air || p1.landing) {
-      parts.push(`滯空 ${p1.air}F`)
-      if (p1.landing) parts.push(`落地 ${p1.landing}F`)
-    }
-
-    if (p1.lastBusy >= 0 && p2.lastBusy >= 0) {
-      const advantage = p2.lastBusy - p1.lastBusy
-      parts.push(`硬直差 ${advantage > 0 ? '+' : ''}${advantage}F`)
-    }
-
-    this.infoEl.textContent = parts.join('　')
+      ['發生', has.active ? p1.firstActive - p1.attackStart + 1 : null],
+      ['持續', has.active ? p1.activeCount : null],
+      ['全體', has.attack ? p1.attackFrames : null],
+      ['硬直差', has.both ? `${advantage > 0 ? '+' : ''}${advantage}` : null],
+    ]
+    if (!isEmpty && p1.landing) items.push(['落地', p1.landing])
+    this.infoEl.textContent = items.map(([name, value]) => `${name} ${value ?? '--'}F`).join('　')
   }
 }

@@ -13,6 +13,8 @@ export function getLaunch(move) {
 }
 
 const STEP = 1 / FPS
+const CEILING_GAP = 0.05 // 跳躍撞到天花板：頭頂停在天花板下多少（公尺）
+export const FLASH_COLOR = 0xff2020 // 受擊紅光的顏色（人物身上、第一人稱畫面四周）
 
 // 擊退（knockback、blockPush）填的是距離（公尺）：轉成初速 = 距離 × KNOCK_DECAY，之後速度每秒衰減 e^-KNOCK_DECAY，總共約滑出填的距離
 export const KNOCK_DECAY = 8
@@ -35,6 +37,9 @@ const HURTBOX_PARTS = [
   { name: 'leftShin', bones: ['LeftLeg', 'LeftFoot'], pad: 0.06, zPad: 0.3, noFly: true },
   { name: 'rightShin', bones: ['RightLeg', 'RightFoot'], pad: 0.06, zPad: 0.3, noFly: true },
 ]
+
+const WAKE_TURN_FRAMES = 8 // 起身最後幾幀先轉向對手
+const LIMB_SEGMENTS = 3 // hitLimb 最多幾段（bones 最多 4 根骨頭）
 
 const COLOR = {
   hurtbox: 0x44ff88,
@@ -89,7 +94,7 @@ export class Fighter {
       pushHalfWidth: 0.25, // 推擠範圍半寬（公尺）
       fadeTime: 0.1,
       // 招式表（分類：普通 / 空中 / 必殺 / 超必殺），格式與說明見 moveSets.js；沒填用類別的 static moveSet
-      // 建立後攤平成 this.moves（招式 key → 數據）與 this.airMoves（地面招式 key → 空中招式 key）
+      // 建立後攤平成 this.moves（招式 key → 數據）與 this.airMoves（地面招式 key → 空中招式 key）、this.derives（衍生攻擊）
       moveSet: null,
       hitBones: ['LeftHand', 'RightHand'], // 預設攻擊判定骨頭
       /**
@@ -100,15 +105,15 @@ export class Fighter {
        *   以動畫檔本身的幀數填寫（animFps，Mixamo 下載的 30F），跟遊戲邏輯的 FPS 無關
        */
       jump: {
-        prejump: 0,
-        air: 45,
-        landing: 3, // 落地硬直；0 = 落地直接回到站立
+        prejump: 2,
+        air: 46,
+        landing: 0, // 落地硬直；0 = 落地直接回到站立
         heightRate: 1.25,
         apexRate: 0.4,
         forwardSpeed: 2, // 斜跳水平速度（公尺 / 秒）
         backSpeed: 2,
-        animTakeoff: 11,
-        animLand: 31,
+        animTakeoff: 12,
+        animLand: 28,
         animFps: 30,
       },
       // 衝刺：前前 / 後後，固定 frames 幀內移動 distance 公尺，期間不能出招、不能防禦
@@ -130,7 +135,7 @@ export class Fighter {
       // 衝刺取消（按鈕 0）：普通攻擊打中 / 被防禦後按 0、或自由狀態按「前 + 0」，往前衝刺，衝刺中可以隨時出招
       // 空中也可以（停在當下高度往前衝，之後落下）；消耗 DG 由 Combat 處理（startedRush）
       rush: {
-        moves: ['light', 'medium', 'heavy', 'airHeavy'], // 哪些招式打中 / 被防禦後可以取消
+        moves: ['light', 'medium', 'heavy', 'TC_HH', 'TC_HHH'], // 哪些招式打中 / 被防禦後可以取消
         glowTime: 0.5, // 發光秒數
         glowColor: 0x66ffcc,
         glowStrength: 0.6, // 發光強度（0~1）
@@ -192,6 +197,7 @@ export class Fighter {
     this.groundY = 0
     this.freeHurtPad = 0.05 // 自由模式的受擊框：骨頭範圍（含 pad）外，水平再加寬幾公尺（每邊）
     this.getFloor = null // (fighter) → 腳下地板的世界高度（null = 找不到）；有給時跳躍 / 落下會落在地板上（自由模式），沒給 = 落回 groundY
+    this.getCeiling = null // (fighter, fromY) → 頭上天花板的世界高度（fromY = 往上找的起點，相對 groundY 的離地高度；null = 沒有）；有給時往上撞到就停（自由模式）
     this.flyDir = 0 // 打飛時往哪邊飛（+1 / -1）
     this.flyBounce = 0 // 這次打飛的反彈力度（招式的 launch.wallBounce），0 = 不反彈
     this.isFlyBounced = false // 這次飛走已經撞牆反彈過（只彈一次）
@@ -220,6 +226,7 @@ export class Fighter {
     this.nextMirror = false // 下一次出 chainMirror 招式時是否鏡像
     this.pushVelocity = 0 // 打到邊界的對手時，自己往後退的速度（公尺 / 秒）
     this.chainKey = null // chainCancel：預約的下一招（攻擊或絕招）
+    this.cancelKey = null // 前搖時先按的絕招 / 動力衝擊：攻擊判定一到就取消攻擊放招（不走 chain）
     this.queuedAttack = null // 預約的絕招：絕招要由 main.js 開演出，收招結束後交給 main.js 送出
     this.twinActions = new Map() // 同一個動作重新播放時改播分身，才能從舊的淡入新的（連打不會瞬間跳回第 0 幀）
     this.connected = false // 這次出招已經碰到對手（打中或被防禦），衝刺取消用
@@ -228,10 +235,14 @@ export class Fighter {
     this.keepRushAnim = false // 衝刺動畫已在停頓中先播了，開始衝刺時不要重播
     this.rushAttack = null // 衝刺取消的停頓 / 不能出招期間按的招式，可以出招的第一幀出（絕招由 main.js 開演出）
     this.usedRush = false // 這一幀用掉了衝刺取消鍵（main.js 清掉記住的輸入）
+    this.crumple = null // 這次受擊會倒地（招式的 crumple），null = 一般受擊
+    this.isCrumpleGetUp = false // 倒地後起身中（down 狀態，倒地動畫倒著播）
+    this.armorHits = 0 // 這次出招霸體已經擋了幾下
+    this.isMoveGlowing = false // 招式的全身發光（move.glow）亮著
     this.recoveryCut = 0 // chainCancel：這次出招的收招少了幾幀
     this.hurtboxParts = [] // { box, bones, pad, helper }
     this.hitParts = [] // { name, sphere, bone, helper }：所有招式用到的骨頭，出招時只啟用該招的部分
-    this.limbHit = null // { obb, helper }：hitLimb 招式的長方體判定
+    this.limbHits = [] // { obb, helper, isOn }：hitLimb 招式的長方體判定（一段肢體一個，LIMB_SEGMENTS 個）
     this.boneCache = {} // 骨頭名稱（不含前綴）→ 骨頭，見 _getBone
     this.pushBox = new THREE.Box3()
     this.debugGroup = new THREE.Group()
@@ -269,6 +280,20 @@ export class Fighter {
     return this.faceRight ? 1 : -1
   }
 
+  /**
+   * 輸入的前 / 後以這個方向為準（防禦、方向指令）：平常 = 面向
+   * 受擊、防禦硬直、倒地、起身、落地硬直時還不能轉身，面向可能是舊的（例如倒地時對手繞到背後）→ 用對手所在的方向
+   */
+  get inputSign() {
+    if (this.isFreeFacing || !this.opponent || !['hit', 'block', 'down', 'land'].includes(this.state)) return this.facingSign
+    return Math.sign(this.opponent.x - this.x) || this.facingSign
+  }
+
+  /** 起身的最後幾幀（身體已經直立）：先轉向對手，起身結束時面向就是對的 */
+  get isWakingUp() {
+    return this.state === 'down' && !this.isLaunched && !this.isAirborne && this.stateLength - this.stateFrame <= WAKE_TURN_FRAMES
+  }
+
   /** 離地高度（相對 groundY；跳躍、被打飛的高度都用這個） */
   get y() {
     return this.model.position.y - this.groundY
@@ -301,6 +326,11 @@ export class Fighter {
   /** 這一幀被打到時能否防禦：在地上、按著後、沒有在出招 / 受擊 */
   get canBlock() {
     return this.isGuarding && !this.isAirborne && (this.canAct || this.state === 'block')
+  }
+
+  /** 受擊倒地中（crumple）：算站立受擊，可以被追打 */
+  get isCrumpling() {
+    return this.state === 'hit' && !!this.crumple
   }
 
   /** 被打飛、飛走動畫還沒播完（還沒起身）：判定為空中受擊，可以被追打 */
@@ -346,11 +376,15 @@ export class Fighter {
    *   dash：連按兩下方向鍵觸發的衝刺方向（世界座標 -1 / 1），0 = 沒有
    */
   update(input = { move: 0, attack: null, jump: false, guard: false }) {
-    this.isGuarding = !!input.guard || (input.move !== 0 && input.move === -this.facingSign)
+    this.isGuarding = !!input.guard || (input.move !== 0 && input.move === -this.inputSign)
+    // 取消攻擊的招式：這一幀按的，或前搖時先按的（cancelKey）
+    const cancelMove = [input.attack, this.cancelKey].find(key => this._canCancelAttack(key)) // 用這一幀推進前的狀態判斷（跟絕招一樣，至少判定過一次打中）
     this._advanceState()
 
     const airDashDir = this._getAirDashDir(input)
     const airAttack = input.attack && (this.airMoves[input.attack] ?? input.attack)
+    if (this._canReserveCancel(input.attack) && this._isPrior(input.attack, this.cancelKey)) this.cancelKey = input.attack
+    const chainKey = this._getChainKey(input.attack)
     const canAirAttack = this.state === 'air' && !this.hasAirAttacked && airAttack && this.actions[airAttack] && !this.moves[airAttack]?.isSuper
 
     // 預約時段內按衝刺取消：先記住，碰到對手時觸發（見 main.js _step）
@@ -361,14 +395,18 @@ export class Fighter {
 
     // 衝刺取消：停頓中（輸入會延到停頓結束這一幀）或前 lockFrames 幀按的招式先記住
     const isRushLocked = this.isRushing && this.stateFrame < this.rush.lockFrames
-    if (input.attack && this.actions[input.attack] && ((input.rush && this.canRush) || isRushLocked)) this.rushAttack = input.attack
+    if (input.attack && this.actions[input.attack] && ((input.rush && this.canRush) || isRushLocked) && this._isPrior(input.attack, this.rushAttack)) this.rushAttack = input.attack
 
     if (input.rush && this.canRush) {
       this.usedRush = true
       this._startRush()
-    } else if (this._canChain(input.attack)) {
-      // 預約下一招（以最後按的為準），碰到對手才會在這招結束時出（見 _advanceState）
-      this.chainKey = input.attack
+    } else if (cancelMove) {
+      // 取消攻擊（動力衝擊）：攻擊判定期間直接中斷出招
+      this.startMove(cancelMove)
+      this.isStateHeld = false
+    } else if (chainKey) {
+      // 預約下一招（以最後按的為準，但絕招優先），碰到對手才會在這招結束時出（見 _advanceState）
+      if (this._isPrior(chainKey, this.chainKey)) this.chainKey = chainKey
     } else if (this.isRushReady && (input.attack || this.rushAttack) && !this.moves[input.attack || this.rushAttack]?.isSuper) {
       // 衝刺取消中，前 lockFrames 幀之後可以隨時出招（含先記住的）
       // 空中：有 airMoves 的換成空中招式；這次跳躍不能再出空中攻擊
@@ -439,6 +477,7 @@ export class Fighter {
 
     this._updateAirborne()
     this._updateFlyHeight()
+    if (this._isAirRecovery && this.actions.jump) this._play('jump', false) // 空中出招的收招：動作淡回跳躍動畫
     this._syncJumpAnimation()
     this._syncGrabbedAnimation()
     this._syncJuggleAnimation()
@@ -455,6 +494,7 @@ export class Fighter {
     this._checkMissCut()
     this._checkPassFlow()
     this._updatePushback()
+    this._updateMoveGlow()
     this._updateFlash()
     this._updateGlow()
   }
@@ -475,6 +515,12 @@ export class Fighter {
     this._setState('block', true)
   }
 
+  /** 霸體中：招式的 armor 幀數內、還沒擋滿次數（非絕招的攻擊打不斷，見 Combat._checkHits） */
+  get hasArmor() {
+    const armor = this.getCurrentMove()?.armor
+    return !!armor && this.moveFrame <= armor.to && this.armorHits < armor.hits
+  }
+
   /** 目前招式的數據（出招中才有） */
   getCurrentMove() {
     return this.state === 'attack' ? this.moves[this.currentMove] : null
@@ -482,7 +528,7 @@ export class Fighter {
 
   /**
    * 幀數表用的目前幀類型
-   * @returns {'startup' | 'active' | 'recovery' | 'stun' | 'block' | 'dash' | 'down' | 'invincible' | 'grab' | 'prejump' | 'air' | 'landing' | null} null 代表可自由行動
+   * @returns {'startup' | 'active' | 'recovery' | 'stun' | 'block' | 'dash' | 'down' | 'invincible' | 'armor' | 'grab' | 'prejump' | 'air' | 'landing' | null} null 代表可自由行動
    */
   getFrameType() {
     if (this.state === 'hit') return 'stun'
@@ -498,6 +544,7 @@ export class Fighter {
     if (this.isInvincible) return 'invincible' // 絕招開頭的無敵幀
     const grab = this.moves[this.currentMove]?.grab
     if (grab && this.moveFrame >= grab.from && this.moveFrame <= grab.to) return 'grab' // 抓技判定（同 Combat._checkGrabs 的幀數範圍）
+    if (this.hasArmor) return 'armor'
 
     const phase = this._getAttackPhase()
     if (phase !== 'active') return phase
@@ -526,8 +573,9 @@ export class Fighter {
       return 'active'
     }
     if (this.stateFrame < startup) return 'startup'
-    // holdUntilLand：空中發生後一直是攻擊判定，直到落地
-    if (this.isAirborne && this.moves[this.currentMove].holdUntilLand) return 'active'
+    // holdUntilLand：空中發生後一直是攻擊判定，直到落地；有 activeFrames 就只有那幾幀，之後到落地算收招
+    const { holdUntilLand, activeFrames = Infinity } = this.moves[this.currentMove]
+    if (this.isAirborne && holdUntilLand) return this.stateFrame < startup + activeFrames ? 'active' : 'recovery'
     // chainCancel 縮短的是收招，攻擊判定幀不變
     if (this.stateFrame >= this.stateLength - (recovery - this.recoveryCut)) return 'recovery'
     return 'active'
@@ -540,13 +588,13 @@ export class Fighter {
   }
 
   /**
-   * 轉向對手；攻擊、受擊、倒地中不轉身
+   * 轉向對手；攻擊、受擊、倒地中不轉身（起身的最後幾幀可以）
    * 以雙方身體受擊框比較，呼叫前要先 updateBoxes
    * @param {boolean} force 不管目前狀態都轉（動作最後一幀直接接絕招時用）
    * @returns {boolean} 是否有轉身（有的話要重算判定框）
    */
   faceTo(target, force = false) {
-    if (!target || this.isFreeFacing || (!force && !this.canAct)) return false
+    if (!target || this.isFreeFacing || (!force && !this.canAct && !this.isWakingUp)) return false
     const faceRight = target.bodyCenterX >= this.bodyCenterX
     if (faceRight === this.faceRight) return false
     this.faceRight = faceRight
@@ -565,6 +613,8 @@ export class Fighter {
       part.bones.forEach(bone => part.box.expandByPoint(bone.getWorldPosition(pos)))
       part.box.expandByScalar(part.pad)
       if (part.topBone) part.box.max.y = Math.max(part.box.max.y, part.topBone.getWorldPosition(pos).y + part.pad)
+      // 受擊倒地中算站姿：身體框維持站立高度，站著的拳才追打得到
+      if (part.topBone && this.isCrumpling) part.box.max.y = Math.max(part.box.max.y, this.groundY + this.characterHeight * 0.85)
       // 格鬥模式：前後（z）多加 zPad（人物只面向左右，身體的厚度在 z）
       // 自由模式：人物可以面向任何方向，直接用骨頭算出的範圍，水平（x、z）再加寬 freeHurtPad
       if (this.isFreeFacing) {
@@ -628,7 +678,7 @@ export class Fighter {
     if (!this.isHitActive() || target.isInvincible) return false
     const activeBones = this._getActiveHitBones()
     const hurts = target.activeHurtboxes
-    if (this.getCurrentMove()?.hitLimb) return hurts.some(hurt => this.limbHit.obb.intersectsBox3(hurt.box))
+    if (this.getCurrentMove()?.hitLimb) return this._getLimbHits().some(({ obb }) => hurts.some(hurt => obb.intersectsBox3(hurt.box)))
     return this.hitParts
       .filter(hit => activeBones.includes(hit.name))
       .some(hit => hurts.some(hurt => hurt.box.intersectsSphere(hit.sphere)))
@@ -642,9 +692,11 @@ export class Fighter {
     const point = new THREE.Vector3()
     const hurts = target.activeHurtboxes
     if (this.getCurrentMove()?.hitLimb) {
-      const { obb } = this.limbHit
-      const hurt = hurts.find(h => obb.intersectsBox3(h.box))
-      if (hurt) return hurt.box.clampPoint(obb.center, point)
+      // 從末端（腳 / 手）往回找
+      for (const { obb } of this._getLimbHits().reverse()) {
+        const hurt = hurts.find(h => obb.intersectsBox3(h.box))
+        if (hurt) return hurt.box.clampPoint(obb.center, point)
+      }
     } else {
       const activeBones = this._getActiveHitBones()
       for (const hit of this.hitParts) {
@@ -659,14 +711,14 @@ export class Fighter {
 
   /**
    * 記錄這一段已命中
+   * @param {object} move 這一下用的招式數據（可能被 onTarget 覆蓋過，見 Combat._getHitMove）
    * @returns {boolean} 是否要把對手打飛（launch 招式的最後一段）
    */
-  registerHit() {
+  registerHit(move = this.moves[this.currentMove]) {
     const { index, count } = this._getHitWindow()
     this.hitWindow = index
     this.connected = true
     if (this.moves[this.currentMove].chainMirror) this.nextMirror = !this.isMirrored // 下一次同招換手
-    const move = this.moves[this.currentMove]
     // repeatOnHit 的招式：最後一次才打飛
     return !!move.launch && this.isLastHit(index, count)
   }
@@ -692,6 +744,8 @@ export class Fighter {
    */
   takeHit(fromX, move, isLaunch = false, isForceStand = false) {
     this.grabFrame = 0
+    this.crumple = null
+    this.isCrumpleGetUp = false
     this.hangFrames = 0 // 上一下的空中停頓作廢（空中普通命中由 Combat 重新呼叫 hangInAir）
     this.flashFrame = this.flashFrames
     this._applyFlash(1) // 頓幀期間不會 update，先亮起來
@@ -746,6 +800,11 @@ export class Fighter {
     const away = this.x >= fromX ? 1 : -1
     this.knockVelocity = away * move.knockback * KNOCK_DECAY
     this.hitStunFrames = move.hitStun
+    // crumple：受擊動作播 delay 幀後接倒地動畫（見 _advanceState）
+    if (move.crumple && this.actions.death && !this.juggle) {
+      this.crumple = move.crumple
+      this.hitStunFrames = move.crumple.delay + this.getClipLength('death')
+    }
     if (this.juggle) {
       this.juggleStartFrame = this.juggle.restart // 空中挨打：之後每下從 restart 幀重播飛走動畫
       this.juggleHits++ // main.js 看到次數變了，就從當下高度重新算這一下的高度曲線
@@ -972,33 +1031,39 @@ export class Fighter {
     })
   }
 
+  /** 目前招式用到的長方體判定（由肢體根部到末端） */
+  _getLimbHits() {
+    return this.limbHits.filter(hit => hit.isOn)
+  }
+
   /**
-   * hitLimb 的長方體判定：長軸從 from 骨頭指向 to 骨頭，長度 = 兩骨頭距離 + extend，截面 width × width
+   * hitLimb 的長方體判定：bones 每相鄰兩根骨頭一個長方體，長軸從前一根指向後一根，截面 width × width，最後一段再往外延伸 extend
    * 截面的旋轉取「把 Y 軸轉到肢體方向」的最短旋轉，長方體繞長軸的角度不影響太大
    */
   _updateLimbHit(limb, isHitActive) {
-    const { obb, helper } = this.limbHit
-    const from = limb && this._getBone(limb.from)
-    const to = limb && this._getBone(limb.to)
-    helper.visible = !!(from && to) && isHitActive
-    if (!from || !to) {
-      obb.halfSize.set(0, 0, 0)
-      return
-    }
+    this.limbHits.forEach((hit, i) => {
+      const from = limb && i < limb.bones.length - 1 && this._getBone(limb.bones[i])
+      const to = from && this._getBone(limb.bones[i + 1])
+      hit.isOn = !!to
+      hit.helper.visible = hit.isOn && isHitActive
+      if (!hit.isOn) return
 
-    const start = from.getWorldPosition(new THREE.Vector3())
-    const dir = to.getWorldPosition(new THREE.Vector3()).sub(start)
-    const length = dir.length() + (limb.extend ?? 0)
-    dir.normalize()
-    const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+      const { obb, helper } = hit
+      const start = from.getWorldPosition(new THREE.Vector3())
+      const dir = to.getWorldPosition(new THREE.Vector3()).sub(start)
+      const isLast = i === limb.bones.length - 2
+      const length = dir.length() + (isLast ? limb.extend ?? 0 : 0)
+      dir.normalize()
+      const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
 
-    obb.center.copy(start).addScaledVector(dir, length / 2)
-    obb.halfSize.set(limb.width / 2, length / 2, limb.width / 2)
-    obb.rotation.setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(quaternion))
+      obb.center.copy(start).addScaledVector(dir, length / 2)
+      obb.halfSize.set(limb.width / 2, length / 2, limb.width / 2)
+      obb.rotation.setFromMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(quaternion))
 
-    helper.position.copy(obb.center)
-    helper.quaternion.copy(quaternion)
-    helper.scale.set(limb.width, length, limb.width)
+      helper.position.copy(obb.center)
+      helper.quaternion.copy(quaternion)
+      helper.scale.set(limb.width, length, limb.width)
+    })
   }
 
   /** 依 Mixamo 骨頭名稱（不含前綴）取得骨頭，查過的會記住 */
@@ -1034,10 +1099,13 @@ export class Fighter {
     })
 
     // hitLimb 招式共用的長方體判定（1 × 1 × 1 的網格，依肢體長度縮放）
-    const limbHelper = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), sphereMat)
-    limbHelper.visible = false
-    this.debugGroup.add(limbHelper)
-    this.limbHit = { obb: new OBB(), helper: limbHelper }
+    const limbGeo = new THREE.BoxGeometry(1, 1, 1)
+    this.limbHits = Array.from({ length: LIMB_SEGMENTS }, () => {
+      const helper = new THREE.Mesh(limbGeo, sphereMat)
+      helper.visible = false
+      this.debugGroup.add(helper)
+      return { obb: new OBB(), helper, isOn: false }
+    })
 
     this.debugGroup.add(new THREE.Box3Helper(this.pushBox, COLOR.pushbox))
   }
@@ -1048,7 +1116,11 @@ export class Fighter {
       this.isStateHeld = false
       return
     }
-    if (this.canAct) return
+    if (this.canAct) {
+      // 自由模式：站立 / 走路 / 防禦卻還在空中（例如衝刺途中走出平台邊緣）→ 改成滯空，才會落下、落地時更新地面高度
+      if (this.isAirborne && this.getFloor) this._setState('air')
+      return
+    }
     // 飛走動畫播完還在空中（空中命中後下墜變慢）：停在飛走最後一幀，落地後才起身
     if (this.state === 'down' && this.isAirborne && this.stateFrame >= this.flyFrames - 1) return
     // 死亡：播完停在最後一幀，不會回到站立 / 起身
@@ -1060,9 +1132,15 @@ export class Fighter {
     this.stateFrame++
     if (this.state === 'air') return // 滯空由 _updateAirborne 依高度判斷落地
 
+    if (this.isCrumpling && this.stateFrame === this.crumple.delay) this._play('death', true) // 受擊後接倒地動畫
+
     if (this.state === 'jumpStart') {
       if (this.stateFrame >= this.jump.prejump) this._takeOff()
-    } else if (this.stateFrame >= this.stateLength && this.state === 'attack' && this.chainKey && this.connected && !this.isAirborne) {
+    } else if (this.isCrumpling && this.stateFrame >= this.stateLength && !this.isAirborne) {
+      // 倒到底沒被追打：無敵起身
+      this.isCrumpleGetUp = true
+      this._setState('down')
+    } else if (this.stateFrame >= this.stateLength && this.state === 'attack' && this._isChainReady() && !this.isAirborne) {
       const key = this.chainKey
       if (this.moves[key].isSuper) {
         // 絕招要開演出：先回到站立，下一幀由 main.js 送出
@@ -1078,7 +1156,8 @@ export class Fighter {
       // holdUntilLand：停在最後一幀等落地（落地由 _updateAirborne 切到落地硬直）
     } else if (this.stateFrame >= this.stateLength) {
       // 空中出招 / 空中衝刺 / 空中受擊結束還沒落地：回到滯空姿勢（受擊後到落地前不能再出招、衝刺）
-      const isToAir = this.isAirborne && ['attack', 'airDash', 'hit'].includes(this.state)
+      // 其他動作（地面衝刺、防禦等）途中走出平台邊緣也一樣回到滯空，不會變成站在空中
+      const isToAir = this.isAirborne
       if (isToAir && this.state === 'hit') {
         this.hasAirAttacked = true
         this.hasAirDashed = true
@@ -1208,6 +1287,20 @@ export class Fighter {
     this._setState('air')
   }
 
+  /**
+   * 往上撞到天花板（自由模式，getCeiling）：頭頂停在天花板下 ceilingGap，往上的速度歸 0、改成自由落下
+   * 起跳前頭就已經頂到（天花板比頭低）：停在原本的高度不再往上
+   */
+  _hitCeiling(prevY) {
+    const ceil = this.getCeiling?.(this, prevY)
+    if (ceil == null) return
+    const maxY = ceil - this.groundY - this.characterHeight - CEILING_GAP
+    if (this.y <= maxY) return
+    this.y = Math.max(maxY, Math.min(prevY, this.y))
+    this._toFreeFall()
+    this.vy = Math.min(this.vy, 0)
+  }
+
   /** 從跳躍拋物線切到自由落下，延續當下的垂直速度 */
   _toFreeFall() {
     if (!this.isJumpArc) return
@@ -1278,6 +1371,7 @@ export class Fighter {
       const { riseGravity, gravity } = this._getJumpPhysics()
       this.vy -= (this.vy > 0 ? riseGravity : gravity) * t
     }
+    if (this.y > prevY) this._hitCeiling(prevY)
     // 地板（相對 groundY）：格鬥模式 = 0；自由模式 = 腳下場景的高度（跳上平台、從高處落下）
     const floor = this._getFloorY()
     if (this.getFloor && (this.y > floor || this.y > prevY)) {
@@ -1326,10 +1420,18 @@ export class Fighter {
       : peak * (1 - ((t - apex) / (1 - apex)) ** 2)
   }
 
+  /** 空中出招（holdUntilLand + activeFrames）的攻擊判定結束、還沒落地：接回跳躍動畫的後續（仍算出招中，不能再出招） */
+  get _isAirRecovery() {
+    const move = this.getCurrentMove()
+    return !!move?.holdUntilLand && !!move.activeFrames && this.isAirborne && this._getAttackPhase() === 'recovery'
+  }
+
   /** 跳躍動畫不照時間播，而是依「起跳前 / 滯空 / 落地」的進度對到動畫裡相對的位置 */
   _syncJumpAnimation() {
-    if (!['jumpStart', 'air', 'land'].includes(this.state)) return
+    const isAir = this.state === 'air' || this._isAirRecovery
+    if (!isAir && !['jumpStart', 'land'].includes(this.state)) return
     const action = this.actions.jump
+    if (!action) return
     const { prejump, air, landing, animTakeoff, animLand, animFps } = this.jump
     // 動畫裡的時間點（秒）
     const takeoff = animTakeoff / animFps
@@ -1339,7 +1441,7 @@ export class Fighter {
 
     let time = lerp(land, end, this.stateFrame / landing)
     if (this.state === 'jumpStart') time = lerp(0, takeoff, this.stateFrame / prejump)
-    else if (this.state === 'air') {
+    else if (isAir) {
       // 動畫的最高點在中間：上升段對到前半、下降段對到後半，動作才會跟著不對稱的軌跡
       const p = Math.min(1, this.airFrame / air)
       const a = this._getApexRate()
@@ -1402,6 +1504,14 @@ export class Fighter {
    */
   startDeath() {
     if (this.isDying) return
+    if (this.isCrumpleGetUp) {
+      // 受擊倒地倒到底才死：已經躺在地上，直接停在倒地動畫最後一格
+      this.deathKey = 'death'
+      this._setState('dead', true)
+      this.stateFrame = this.stateLength - 1
+      this.currentAction.time = this.currentAction.getClip().duration
+      return
+    }
     this.deathKey = this.state === 'down' && this.actions.flyDeath ? 'flyDeath' : 'death'
     this._setState('dead', true)
   }
@@ -1411,6 +1521,7 @@ export class Fighter {
    * 被打中（takeHit）或 release() 才解除
    */
   grab(stunFrame) {
+    this.crumple = null
     this.knockVelocity = 0
     this.hitStunFrames = Infinity
     this._setState('hit', true)
@@ -1487,6 +1598,8 @@ export class Fighter {
     if (state === 'guard') this.guardStartFrame = this.leftBlock ? this.guardHoldFrame : 0
     this.state = state
     this.stateFrame = 0
+    this.cancelKey = null
+    if (state !== 'down') this.isCrumpleGetUp = false
     this.rushCarryFrames = 0
     this.isRush = false
     this.isRushAttack = state === 'attack' && wasRush
@@ -1500,6 +1613,7 @@ export class Fighter {
       this.nextMirror = false
       this.chainKey = null
       this.recoveryCut = 0
+      this.armorHits = 0
       this.connected = false
       this.rushQueued = false
       this.isMissCut = false // missCut：這次出招已經確定揮空（之後算收招）
@@ -1541,6 +1655,15 @@ export class Fighter {
       actionKey = 'jump'
     } else if (state === 'jumpStart' || state === 'air') {
       actionKey = 'jump'
+    } else if (state === 'down' && this.isCrumpleGetUp) {
+      // 倒地後起身：沒有飛走，直接起身；動作 = 倒地動畫從最後一格倒著播，時間同一般起身
+      this.flySlow = 1
+      this.flyFrames = 0
+      this.stateLength = this.getClipLength('getUp') || 60
+      actionKey = null
+      const action = this.actions.death
+      action.paused = false
+      action.setEffectiveTimeScale(-this.getClipLength('death') / this.stateLength)
     } else if (state === 'down') {
       // launch.slow：飛走動畫放慢，飛走的幀數跟著變長（起身照原速）
       this.flyFrames = Math.round(this.getClipLength('fly') * this.flySlow)
@@ -1556,7 +1679,7 @@ export class Fighter {
     this._applyFacing() // 有 yaw / mirror 的招式：進出招式時切換
 
     const isOnce = ['attack', 'hit', 'down', 'block', 'dead'].includes(state)
-    this._play(actionKey, isOnce, isRestart || state === 'attack' || state === 'dash')
+    if (actionKey) this._play(actionKey, isOnce, isRestart || state === 'attack' || state === 'dash')
     if (state === 'down' && this.flySlow !== 1) this.currentAction?.setEffectiveTimeScale(1 / this.flySlow)
   }
 
@@ -1708,39 +1831,88 @@ export class Fighter {
     this.hitConfirmed = true
   }
 
-  /** 預約：chainCancel 招式的預約時段內，按任何攻擊 / 絕招鍵 */
-  _canChain(key) {
-    return !!key && !!this.actions[key] && this._inQueueWindow()
+  /**
+   * 預約時段內按攻擊 / 絕招鍵會接出哪一招（null = 不能接）
+   * 衍生鍵（derives）→ 衍生招式；chainCancel 招式 → 按的那一招；只能衍生的招式，其他鍵只有絕招、動力衝擊能預約
+   */
+  _getChainKey(button) {
+    if (this._canReserveCancel(button)) return null // 攻擊判定一到就放招（cancelKey），不走 chain
+    // 已經預約了攻擊 / TC：在它出來之前按絕招 / 動力衝擊都可以改成它（不限預約時段）
+    if (this.state === 'attack' && this.chainKey && this.getPriority(button) > 0 && this.actions[button]) return button
+    if (!button || !this._inQueueWindow()) return null
+    const derive = this._getDerives().find(d => d.by.includes(button))
+    const canReserve = this.getCurrentMove().chainCancel || this.getPriority(button) > 0
+    const key = derive?.to ?? (canReserve ? button : null)
+    return this.actions[key] ? key : null
   }
 
-  /** 預約時段：攻擊判定第 1 幀的前 chainEarly 幀 ~ 攻擊判定最後 1 幀（幀數表編號） */
+  /** 預約的優先順序：絕招 2 > cancelAttack（動力衝擊）1 > 其他 0 */
+  getPriority(key) {
+    const move = this.moves[key]
+    return move?.isSuper ? 2 : move?.cancelAttack ? 1 : 0
+  }
+
+  /** 預約時新按的招式能不能蓋掉原本的：優先順序低的不能蓋掉高的 */
+  _isPrior(key, current) {
+    return this.getPriority(key) >= this.getPriority(current)
+  }
+
+  /** 地面攻擊的前搖、攻擊判定期間按了更優先的招式（絕招、動力衝擊）：記到 cancelKey，攻擊判定一到就放招 */
+  _canReserveCancel(key) {
+    return this.state === 'attack' && !this.isAirborne && !!this.actions[key]
+      && this.getPriority(key) > this.getPriority(this.currentMove) && this._getAttackPhase() !== 'recovery'
+  }
+
+  /** 現在能不能用 key 取消攻擊（cancelAttack）：地面普通攻擊 / TC 的攻擊判定期間 */
+  _canCancelAttack(key) {
+    const move = this.getCurrentMove()
+    return !!this.moves[key]?.cancelAttack && !!this.actions[key] && !!move && this.getPriority(this.currentMove) === 0 && !this.isAirborne && this.getFrameType() === 'active'
+  }
+
+  /** 目前招式能衍生的招式（tc 分類）：[{ to, by, on, cut }] */
+  _getDerives() {
+    return (this.state === 'attack' && this.derives[this.currentMove]) || []
+  }
+
+  /** 有預約、而且達成觸發條件：碰到對手（打中或被防禦）；on 是 'hit' 的衍生要打中 */
+  _isChainReady() {
+    if (!this.chainKey) return false
+    const derive = this._getDerives().find(d => d.to === this.chainKey)
+    return derive?.on === 'hit' ? this.hitConfirmed : this.connected
+  }
+
+  /** 預約時段：攻擊判定第 1 幀的前 chainEarly 幀 ~ 攻擊判定最後 1 幀（幀數表編號）；碰到對手後（打中 / 被防禦）延長到這招結束 */
   _inQueueWindow() {
     const move = this.getCurrentMove()
-    if (!move?.chainCancel || move.hits) return false
+    if (!move || move.hits || !(move.chainCancel || this._getDerives().length)) return false
     const firstActive = move.startup + 1
-    const lastActive = this.stateLength - (move.recovery - this.recoveryCut)
+    const lastActive = this.connected ? this.stateLength : this.stateLength - (move.recovery - this.recoveryCut)
     const frame = this.moveFrame
     return frame >= firstActive - (move.chainEarly ?? 5) && frame <= lastActive
   }
 
-  /** 有預約、而且碰到對手了：收招少 chainCancel 幀（只縮一次，攻擊判定幀不變） */
+  /** 有預約、而且達成觸發條件：收招少 chainCancel（衍生 = 衍生招式的 cut）幀（只縮一次，攻擊判定幀不變） */
   _applyChainCut() {
     const move = this.getCurrentMove()
-    if (!move?.chainCancel || !this.chainKey || !this.connected || this.recoveryCut) return
-    this.recoveryCut = Math.max(0, Math.min(move.chainCancel, this.stateLength - this.stateFrame - 1))
+    const derives = this._getDerives()
+    const derive = derives.find(d => d.to === this.chainKey)
+    const cut = derive?.cut ?? move?.chainCancel ?? derives[0]?.cut
+    if (!cut || !this._isChainReady() || this.recoveryCut) return
+    this.recoveryCut = Math.max(0, Math.min(cut, this.stateLength - this.stateFrame - 1))
     this.stateLength -= this.recoveryCut
   }
 
-  /** 能否預約衝刺取消：chainCancel 招式照預約時段，其他可衝刺取消的招式在前搖或攻擊判定期間 */
+  /** 能否預約衝刺取消：chainCancel / 能衍生的招式照預約時段，其他可衝刺取消的招式在前搖或攻擊判定期間 */
   _canQueueRush() {
     if (this.state !== 'attack' || !this.rush.moves.includes(this.currentMove)) return false
-    if (this.getCurrentMove().chainCancel) return this._inQueueWindow()
+    if (this.getCurrentMove().chainCancel || this._getDerives().length) return this._inQueueWindow()
     return this._getAttackPhase() !== 'recovery'
   }
 
   /** 還要幾幀才能自由行動；空中、站立等沒有固定長度的狀態回傳 Infinity / 0（輸入預約用） */
   get framesUntilFree() {
     if (this.canAct) return 0
+    if (this.isCrumpling) return Infinity // 倒地後還要起身，不能預約
     if (this.state === 'attack' && this.isAirborne) return Infinity // 空中出招要等落地，不能預約接下一招 / 絕招
     if (['attack', 'hit', 'block', 'dash', 'land', 'down'].includes(this.state)) return this.stateLength - this.stateFrame
     if (this.state === 'jumpStart') return Infinity
@@ -1788,6 +1960,7 @@ export class Fighter {
   resetToIdle() {
     this.flyHeight = 0
     this.juggle = null
+    this.crumple = null
     this.y = 0
     this.vx = 0
     this.vy = 0
@@ -2028,6 +2201,19 @@ export class Fighter {
     }
   }
 
+  /**
+   * 目前的特效強度 0 ~ 1（例如第一人稱的畫面四周染色）：glow = 衝刺取消的發光、flash = 受擊紅光
+   * 跟人物身上的顏色同步淡出；顏色見 rush.glowColor、FLASH_COLOR
+   */
+  get effectLevels() {
+    const total = Math.round(this.rush.glowTime * FPS)
+    const fade = Math.max(1, total / 3)
+    return {
+      glow: this.glowFrame > 0 ? Math.min(1, this.glowFrame / fade) : 0,
+      flash: this.flashFrame > 0 && this.flashFrames > 0 ? this.flashFrame / this.flashFrames : 0,
+    }
+  }
+
   /** 衝刺取消的發光：疊加自發光，最後 1/3 的時間淡出 */
   _updateGlow() {
     if (this.glowFrame <= 0) return
@@ -2037,8 +2223,17 @@ export class Fighter {
     this._applyGlow(Math.min(1, this.glowFrame / fade) * this.rush.glowStrength)
   }
 
-  _applyGlow(k) {
-    const glow = new THREE.Color(this.rush.glowColor)
+  /** 招式的全身發光（move.glow）：亮到第 to 幀，再用 fade 幀淡出；招式結束、被打斷就熄掉（衝刺取消的發光優先） */
+  _updateMoveGlow() {
+    const glow = this.getCurrentMove()?.glow
+    const k = glow ? Math.min(1, Math.max(0, 1 - (this.moveFrame - glow.to) / Math.max(1, glow.fade ?? 0))) : 0
+    const isOn = k > 0
+    if (this.glowFrame <= 0 && (isOn || this.isMoveGlowing)) this._applyGlow(isOn ? k * glow.strength : 0, glow?.color)
+    this.isMoveGlowing = isOn
+  }
+
+  _applyGlow(k, color = this.rush.glowColor) {
+    const glow = new THREE.Color(color)
     this.materials.forEach(({ material, emissive }) => {
       if (!emissive) return
       material.emissive.copy(emissive).lerp(glow, k)
@@ -2058,7 +2253,7 @@ export class Fighter {
   /** amount 0~1：貼圖偏紅 + 淡淡的紅色自發光（衝刺取消發光中就不蓋過它） */
   _applyFlash(amount) {
     const k = amount * this.flashStrength
-    const red = new THREE.Color(0xff2020)
+    const red = new THREE.Color(FLASH_COLOR)
     this.materials.forEach(({ material, color, emissive }) => {
       material.color.setRGB(color.r, color.g * (1 - k), color.b * (1 - k))
       if (emissive && this.glowFrame <= 0) material.emissive.copy(emissive).lerp(red, amount * this.flashGlow)

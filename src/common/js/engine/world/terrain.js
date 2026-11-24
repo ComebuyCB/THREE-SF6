@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh'
 
 const DOWN = new THREE.Vector3(0, -1, 0)
+const UP = new THREE.Vector3(0, 1, 0)
 
 /**
  * Terrain：角色在 3D 場景裡移動用的地形查詢（跟玩法無關，任何需要「走在場景上」的模式都能用）
@@ -135,6 +136,19 @@ export class Terrain {
     const { stepUp, far } = this.floorRay
     this.raycaster.far = far
     this.raycaster.set(this.origin.set(pos.x, pos.y + stepUp, pos.z), DOWN)
+    const hit = this._cast().find(item => item.object.visible)
+    return hit ? hit.point.y : null
+  }
+
+  /**
+   * 頭上的天花板（世界高度）：從 from（世界座標）往上找場景，第一個碰到的面；沒有場景、找不到 = null
+   * 只碰得到面朝下的面（從下面看得到的天花板）；far = 往上找多遠
+   */
+  getCeiling(from, far = 10) {
+    if (!this.targets.length) return null
+    this._syncColliders()
+    this.raycaster.far = far
+    this.raycaster.set(this.origin.copy(from), UP)
     const hit = this._cast().find(item => item.object.visible)
     return hit ? hit.point.y : null
   }

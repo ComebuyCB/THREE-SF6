@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import GUI from 'three/addons/libs/lil-gui.module.min.js'
-import { Fighter, FPS } from './games/fighting/fighter.js'
+import { Fighter, FPS, FLASH_COLOR } from './games/fighting/fighter.js'
 import { FrameMeter } from './games/fighting/frameMeter.js'
 import { MixamoLoader } from './engine/assets/mixamoLoader.js'
 import { Stage } from './games/fighting/stage.js'
@@ -13,6 +13,9 @@ import { FreeMode } from './games/fighting/freeMode.js'
 import { Combat, LineSpace } from './games/fighting/combat.js'
 import { addSmileMorph } from './engine/character/faceMorph.js'
 import { FighterAI, AI_LEVELS } from './games/fighting/ai.js'
+import { InputHistory } from './games/fighting/inputHistory.js'
+import { MoveList } from './games/fighting/moveList.js'
+import { MotionInput } from './games/fighting/motionInput.js'
 import { Roguelike } from './games/fighting/roguelike.js'
 import { WEATHERS } from './engine/world/atmosphere.js'
 import { GameCore } from './engine/core/gameCore.js'
@@ -57,18 +60,21 @@ class FighterViewer {
       anims: {
         idle: `${MODEL_DIR}/anims/normal/Idle.fbx`,
         walk: `${MODEL_DIR}/anims/normal/Walking.fbx`,
-        run: `${MODEL_DIR}/anims/normal/Running.fbx`, // 自由模式（M）跑步
+        run: `${MODEL_DIR}/anims/normal/Running.fbx`, // 自由模式（V）跑步
         fastRun: `${MODEL_DIR}/anims/normal/StandardRun.fbx`, // 自由模式的衝刺
         dash: `${MODEL_DIR}/anims/normal/Walking_dash.fbx`, // 衝刺（地面 / 空中 / 衝刺取消共用），後衝倒著播
         hit: `${MODEL_DIR}/anims/normal/HitTo.fbx`,
         light: `${MODEL_DIR}/anims/normal/Punching_L.fbx`,
         medium: `${MODEL_DIR}/anims/normal/Punching_M.fbx`,
         heavy: `${MODEL_DIR}/anims/normal/Punching_H.fbx`,
+        TC_HH: `${MODEL_DIR}/anims/normal/Punching_H.fbx`, // 衍生：重 → 重（鏡像換手，見 moveSets.js）
+        TC_HHH: `${MODEL_DIR}/anims/normal/MmaKick_H.fbx`, // 衍生：重 → 重 → 重
+        DI: `${MODEL_DIR}/anims/normal/MmaKick_H.fbx`, // 動力衝擊（暫用，之後換）
         airHeavy: `${MODEL_DIR}/anims/normal/MmaKick.fbx`, // 空中重攻擊
         fly: `${MODEL_DIR}/anims/normal/FlyingBack.fbx`, // 被打飛（招式的 launch）、浮空挨打（lock.juggle）
         getUp: `${MODEL_DIR}/anims/normal/KipUp.fbx`, // 飛走後起身
-        // 血量 0、連段結束：站著死（受擊 / 防禦硬直結束時）；被打飛的 fly 播完倒地後接 flyDeath（播完不起身，期間無敵）
-        death: `${MODEL_DIR}/anims/normal/Standing_Death.fbx`,
+        // 站著倒地：被動力衝擊打中（招式的 crumple）；血量 0、連段結束：站著死（受擊 / 防禦硬直結束時）；被打飛的 fly 播完倒地後接 flyDeath（播完不起身，期間無敵）
+        death: `${MODEL_DIR}/anims/normal/StandingDown.fbx`,
         flyDeath: `${MODEL_DIR}/anims/normal/FlyingBack_Death.fbx`,
         jump: `${MODEL_DIR}/anims/normal/Jumping.fbx`,
         block: `${MODEL_DIR}/anims/normal/BodyBlock.fbx`,
@@ -98,9 +104,12 @@ class FighterViewer {
         shake_head: { start: 2 },
         dodge_step: { start: 2 }, // 第 2 次起從第 50 幀開始（2 + fighter.js firstPassDelay 48）
         wind_step: { start: 2, end: 20 },
-        light: { start: 2, end: 4 },
-        medium: { start: 5 },
-        heavy: { start: 4 },
+        light: { start: 5, end: 4 },
+        medium: { start: 9 },
+        heavy: { start: 9 },
+        TC_HH: { start: 4 }, // 跟 heavy 同一個動作（前搖比 heavy 多 5 幀）
+        DI: { start: 6 }, // 裁到第 35 幀剛好踢到
+        TC_HHH: { start: 22 }, // 迴旋踢前的準備動作：裁到第 20 幀剛好踢到
         block: { start: 3 }, // 防禦動作
         hit: { start: 6 }, // 受擊動作
         standUp: { start: 68, end: 12 }, // 起身（坐下時倒著播）：結尾跟 idle 接不太起來，裁掉最後 20 幀
@@ -149,6 +158,7 @@ class FighterViewer {
         晴天: 'src/common/img/DaySky.jpg',
         機庫外: 'src/common/img/hanger_exterior.webp',
       },
+      mouseChordTime: 50, // 自由模式：滑鼠左右鍵在幾毫秒內先後按下算一起按（中攻擊）；輕 / 重攻擊會等這麼久才出
       dashTapWindow: 250, // 連按兩下方向鍵的間隔（毫秒）內算衝刺
       timeScaleStep: 0.1, // 遊戲速度快捷鍵（- / =）每按一下調多少
       characterHeight: 1.75, // 人物身高（公尺）：模型原始尺寸不同，載入後縮放成一致；characters 可個別填 height
@@ -156,8 +166,8 @@ class FighterViewer {
       // 場景牆壁當邊界：從場地中心沿 ±x 方向、在這幾個高度（公尺）各發一條射線，最近碰到的場景物體就是邊界
       sceneWallHeights: [0.3, 1, 1.6],
       startGap: 3, // 開場兩人距離（P1 x = -1.5、P2 x = 1.5）
-      // 選完升級牌進下一層時 P1 的補給：血量 + 上限的 hpRate、DG / SG 各 + 幾格（血量 / 量條其餘保留，不會回滿）
-      stageReward: { hpRate: 0.1, dgBars: 1, sgBars: 1 },
+      // 選完升級進下一層時 P1 的補給：血量 + 上限的 hpRate、DG / SG 各 + 幾格（血量 / 量條其餘保留，不會回滿）；升級會再加（roguelike.getStageReward）
+      stageReward: { hpRate: 0.45, dgBars: 1, sgBars: 1 },
       maxDistance: 5, // 兩人最遠距離（公尺），超過時往外移動的一方被擋住
       rushInputFrames: 8, // 衝刺取消鍵按下後記住幾幀：跟出招鍵差幾幀內按都算
       bufferFrames: 8, // 任何動作結束前幾幀內按攻擊 / 絕招鍵會記住，動作最後一幀接著出招
@@ -170,7 +180,7 @@ class FighterViewer {
       cameraShake: { frames: 12, frequency: 25, superAmplitude: 0.03 },
       // 環繞鏡頭（H）：一直看著兩人中點，前 pullTime 秒拉遠（距離 × pullScale），繞一整圈共 duration 秒，最後 returnTime 秒拉回原本的鏡頭（秒，不受遊戲速度影響）
       orbitCamera: { duration: 3, pullTime: 0.5, returnTime: 0.5, pullScale: 1.8 },
-      // 自由模式 → 格鬥模式（M）：人物飛回開場位置、鏡頭移回預設位置的過渡（時間同進入自由模式的鏡頭轉向 freeMode.js enterTime）
+      // 自由模式 → 格鬥模式（V）：人物飛回開場位置、鏡頭移回預設位置的過渡（時間同進入自由模式的鏡頭轉向 freeMode.js enterTime）
       //   arcHeight = 飛行弧線最高多高（公尺）
       fightReturn: { arcHeight: 1.2 },
       // 音效：一般招式命中 hit、絕招命中 superHit、防禦住 block、倒地 knockdown；其他 key 給招式的 sounds 用；{ url, volume } 可個別調音量
@@ -220,21 +230,27 @@ class FighterViewer {
         blendIn: 20, // 拉近幀數
         blendOut: 20, // 拉回幀數
       },
+      // 特寫鏡頭（招式的 closeUp、動力衝擊對撞）：攻擊方背後、往觀眾那側偏 angle 度，距離 distance、離地 height（膝蓋），看兩人中間離地 lookY
+      // 時間用真實時間（不受放慢影響）：拉近 blendIn 幀、打中後（頓幀結束起算）停留 hold 秒、拉回 blendOut 幀
+      closeUp: { angle: 55, distance: 2.3, height: 0.5, lookY: 1, hold: 1.2, blendIn: 8, blendOut: 25 },
+      // 打中放慢（招式的 slowMo）：遊戲速度 × rate，頓幀結束後持續 time 秒（真實時間），之後 fade 秒恢復
+      slowMo: { rate: 0.25, time: 1, fade: 0.3 },
       // 用 e.code 判斷，開著中文輸入法也能操作
       p1Keys: {
         left: 'KeyA',
         right: 'KeyD',
         jump: ['KeyW', 'Space'], // W 或空白鍵垂直跳，加 A / D 斜跳；可填一個或多個 e.code
-        down: 'KeyS', // 下 + 後 = 站在原地防禦（不後退）
+        down: 'KeyS', // 下：下 + 後 = 站在原地防禦（不後退）；前前 / 後後中間按到下就不算衝刺
         light: 'Numpad7',
         medium: 'Numpad8',
         heavy: 'Numpad9',
         rush: 'Numpad0', // 輕 / 中 / 重攻擊打中後：發光 + 往前衝刺；預約時段內先按會在打中時觸發
-        // 絕招欄位（數字鍵盤 4 / 5 / 6）：依序放 roguelike 學到的絕招（第 1 格是一開始就會的閃身步）
-        superSlots: ['Numpad4', 'Numpad5', 'Numpad6'],
-        // 除錯：主鍵盤 4 ~ 9 直接出絕招（不管有沒有學到；SG 照樣要 1 格）
+        di: 'Numpad6', // 動力衝擊（自由模式另有 R）
+        // 絕招（SA）= 方向指令 + 攻擊鍵（moveSets.js 的 command）
+        // 除錯：主鍵盤 4 ~ 9 直接出絕招（SG 照樣消耗）
         debugSupers: { Digit4: 'dodge_step', Digit5: 'kick_ball', Digit6: 'wind_step', Digit7: 'dog_bear', Digit8: 'shake_head', Digit9: 'monkey_turn' },
       },
+      freeSupers: { KeyQ: 'dodge_step', KeyE: 'kick_ball' }, // 自由模式的絕招快捷鍵（方向指令 S → D / S → A 照常可以用）
       p2AttackKey: 'NumpadAdd', // 按著數字鍵盤 + 再按出招鍵 = P2 出招
       p2Keys: {
         left: 'ArrowLeft',
@@ -262,6 +278,13 @@ class FighterViewer {
     this.progressEl = document.querySelector('#loadingProgress')
     this.keycapEls = document.querySelectorAll('[data-key]')
     this.helpDockEl = document.querySelector('#helpDock')
+    this.menuEl = document.querySelector('#mainMenu') // 主選單（Esc）
+    this.tintEls = { glow: document.querySelector('.js-tint-glow'), flash: document.querySelector('.js-tint-flash') } // 第一人稱畫面四周染色
+    this.isMenuOpen = false // 主選單開著：遊戲暫停、遊戲按鍵不理
+    this.menuOpenedAt = 0 // 主選單打開的時間（performance.now），擋掉同一次 Esc 又關掉
+    this.menuBtns = [...(this.menuEl?.querySelectorAll('[data-action]') ?? [])]
+    this.menuIndex = 0 // 鍵盤選到第幾個按鈕（W / S）
+    this.menuHover = null // 滑鼠移上去的按鈕（優先顯示成選中，移開回到 menuIndex）
 
     // 4. setup runtime state
     this.mixamo = new MixamoLoader()
@@ -269,28 +292,31 @@ class FighterViewer {
     this.p1 = null
     this.p2 = null
     this.keys = new Set()
-    // GUI 勾選「AI 操作」時由 AI 按鍵；SG 不滿 1 格時不放絕招
+    this.motions = { p1: new MotionInput(), p2: new MotionInput() } // 方向指令（絕招）
+    // GUI 勾選「AI 操作」時由 AI 按鍵；SG 不足時不放絕招
     this.ai = {
       p1: new FighterAI({
-        canSuper: () => this.combat.gauges.p1.canSuper,
+        canSuper: key => this.combat.gauges.p1.canSuper(this.p1.moves[key]?.sgCost),
         getGauges: () => ({ self: this.combat.gauges.p1, opp: this.combat.gauges.p2 }),
         getSuperStartup: (fighter, key) => this._getSuperStartup(fighter, key),
       }),
       p2: new FighterAI({
-        canSuper: () => this.combat.gauges.p2.canSuper,
+        canSuper: key => this.combat.gauges.p2.canSuper(this.p2.moves[key]?.sgCost),
         getGauges: () => ({ self: this.combat.gauges.p2, opp: this.combat.gauges.p1 }),
         getSuperStartup: (fighter, key) => this._getSuperStartup(fighter, key),
       }),
     }
     this.pendingDash = { p1: 0, p2: 0 } // 格鬥模式連按兩下方向鍵：衝刺方向（世界座標），下一幀遊戲邏輯取走
+    this.mouseChord = null // 等另一個滑鼠鍵中：{ button, timer }（見 _onMouseButton）
     this.lastTap = { p1: { code: '', time: 0 }, p2: { code: '', time: 0 } } // 上一次按下的方向鍵，判斷連按用
     this.stageMaxHalfWidth = this.stageHalfWidth // GUI 設定的場地半寬；實際邊界 stageHalfWidth 可能被場景的牆縮小
     this.defaultHalfWidth = this.stageHalfWidth // 場景沒填 halfWidth 時用的半寬
     this.activeProp = null // P1 正在用的物件（坐著的營火、躲著的櫃子）
     this.cameraPull = 0 // 跳躍時鏡頭額外往後拉的距離
     this.returning = null // 自由 → 格鬥模式的過渡中：{ time, duration, items: [{ fighter, from, to, fromRot, toRot }], camFrom, camTo }
-    this.hitCam = null // 命中鏡頭中：{ attacker, move, phase: 'in' / 'out', time, fromPos, fromTarget, base: { target, offset } }
-    this.shake = null // 受擊搖晃中：{ fighter, time, duration }（秒）
+    this.hitCam = null // 命中鏡頭中：{ attacker, move, phase: 'in' / 'out', time, fromPos, fromTarget, base: { target, offset }, hold（特寫鏡頭才有） }
+    this.slowTime = null // 打中放慢中：已經過幾秒（真實時間），null = 沒有放慢
+    this.shake = null // 受擊搖晃中：{ fighters, time, duration（秒）, cycles, amplitude }
     this.accumulator = 0 // 尚未消化的時間，累積滿 1/60 秒就推進 1 幀
     this.superDim = 0 // 絕招演出的變暗程度（0 = 正常、1 = 暗到 dimLevel）
     this.superFogAmount = 0 // 絕招演出的霧濃度 0 ~ 1（場地的霧：平常是地平線霧，演出時漸變成演出的霧，人物不受影響）
@@ -302,9 +328,16 @@ class FighterViewer {
     this.lineSpace = null // 格鬥模式的空間規則
     this.superSpot = null // 絕招聚光燈：{ light, aim, peak }
     this.frameMeter = new FrameMeter()
-    // 關卡制 + 升級牌（試做）：升級套在 P1 身上
+    this.inputHistory = new InputHistory() // P1 的按鍵紀錄
+    this.moveList = new MoveList({
+      getFighter: () => this.p1,
+      getGauge: () => this.combat.gauges.p1,
+      isFree: () => this.freeMode.isActive,
+      onClose: () => this._setMoveListOpen(false),
+    })
+    // 關卡制 + 升級樹（試做）：升級套在 P1 身上
     this.roguelike = new Roguelike({
-      slotLabels: this.p1Keys.superSlots.map(code => code.replace('Numpad', '')),
+      getBaseReward: () => this.stageReward,
       getContext: () => this.p1 && { fighter: this.p1, gauge: this.combat.gauges.p1 },
       onPicked: () => this._startNextStage(),
       onRestart: () => this._restartRun(),
@@ -346,7 +379,8 @@ class FighterViewer {
       moveSpeed: 2,
       showDebug: false, // 除錯顯示（O）：X 軸刻度尺與座標 + 判定框 + 左右邊界牆
       cameraCollision: false, // 鏡頭避開物體（B）：注視點和鏡頭之間被場景擋住時，鏡頭拉近到物體前面
-      showXray: true, // 透視剪影（X）：鏡頭跟隨的人（自由模式跟隨的人、格鬥模式 P1）被場景擋住時，畫出剪影
+      showXray: false, // 透視剪影（X，預設關閉）：鏡頭跟隨的人（自由模式跟隨的人、格鬥模式 P1）被場景擋住時，畫出剪影
+      showInputs: true, // P1 按鍵紀錄顯示（I）
       showFrameMeter: true, // 幀數表 + 連段傷害顯示（P）
       place: '室外', // 室內 / 室外（換場景時照場景設定的 place）
     }
@@ -376,6 +410,24 @@ class FighterViewer {
       if (isOpen) this.popups.forEach(other => other !== popup && other.isOpen && other.toggle(false))
     }
     this.popups = ['#help', '#debugHelp'].filter(el => document.querySelector(el)).map(el => new Popup({ el, onToggle: closeOthers }))
+    // 滑鼠右鍵是重攻擊：不跳出瀏覽器的右鍵選單
+    window.addEventListener('contextmenu', e => e.preventDefault())
+    // 主選單的按鈕
+    this.menuEl?.addEventListener('click', e => {
+      const btn = e.target.closest('[data-action]')
+      if (btn) this._onMenuAction(btn.dataset.action)
+    })
+    // 滑鼠移上去：先選它；移開：回到鍵盤選的那個
+    this.menuBtns.forEach(btn => {
+      btn.addEventListener('mouseenter', () => {
+        this.menuHover = btn
+        this._showMenuFocus()
+      })
+      btn.addEventListener('mouseleave', () => {
+        if (this.menuHover === btn) this.menuHover = null
+        this._showMenuFocus()
+      })
+    })
 
     window.addEventListener('keydown', e => {
       // Alt：放開滑鼠鎖定（自由模式），游標出現可以點 GUI；點畫面再鎖定
@@ -383,9 +435,9 @@ class FighterViewer {
         e.preventDefault()
         this.pointerLook.unlock()
       }
-      // 選升級牌中：1 / 2 / 3（主鍵盤或數字鍵盤）選牌；結算視窗：Enter 重新開始（按鈕有焦點時空白鍵也可以）；其他遊戲按鍵都不理
+      // 選升級中：1 ~ 4（主鍵盤或數字鍵盤）選；結算視窗：Enter 重新開始（按鈕有焦點時空白鍵也可以）；其他遊戲按鍵都不理
       if (this.roguelike.isChoosing) {
-        const index = ['1', '2', '3'].indexOf(e.code.replace(/^(Digit|Numpad)/, ''))
+        const index = ['1', '2', '3', '4'].indexOf(e.code.replace(/^(Digit|Numpad)/, ''))
         if (!e.repeat && index >= 0) this.roguelike.choose(index)
         return
       }
@@ -396,17 +448,36 @@ class FighterViewer {
         }
         return
       }
+      // Esc：主選單開關（剛被 onLost 打開的同一次 Esc 不算，不然會馬上關掉）；主選單開著時其他遊戲按鍵都不理
+      if (e.code === 'Escape') {
+        e.preventDefault()
+        if (e.repeat || performance.now() - this.menuOpenedAt <= 300) return
+        if (this.moveList.isOpen) this._setMoveListOpen(false) // 招式表：先回到主選單
+        else this._setMenuOpen(!this.isMenuOpen)
+        return
+      }
+      if (this.isMenuOpen) {
+        this._onMenuKey(e) // W / S 選、F 確定
+        return
+      }
       // 出招鍵：按著數字鍵盤 + = P2 出招，否則 P1；該玩家由 AI 操作時不理會
       const isAttackKey = this._isAttackKey(e.code)
       const slot = isAttackKey && this.keys.has(this.p2AttackKey) ? 'p2' : 'p1'
       if (!e.repeat && isAttackKey && !this.params[`${slot}AI`]) {
-        const st = this.combat.input[slot]
-        if (e.code === this.p1Keys.light) st.pendingAttack = 'light'
-        if (e.code === this.p1Keys.medium) st.pendingAttack = 'medium'
-        if (e.code === this.p1Keys.heavy) st.pendingAttack = 'heavy'
-        if (e.code === this.p1Keys.rush) st.rushLife = this.rushInputFrames
-        const superKey = this._getSlotMove(e.code) || this.p1Keys.debugSupers[e.code]
-        if (superKey) st.pendingAttack = superKey
+        if (e.code === this.p1Keys.light) this._pressAttack(slot, 'light')
+        if (e.code === this.p1Keys.medium) this._pressAttack(slot, 'medium')
+        if (e.code === this.p1Keys.heavy) this._pressAttack(slot, 'heavy')
+        if (e.code === this.p1Keys.di) this._pressDI(slot)
+        if (e.code === this.p1Keys.rush) this._pressRush(slot)
+        const superKey = this.p1Keys.debugSupers[e.code]
+        if (superKey) this.combat.pressAttack(slot, superKey)
+      }
+      // 自由模式（P1）：R = 動力衝擊；Q / E = 絕招（freeSupers）；左 Shift 在出拳碰到對手後按 = 衝刺取消（揮空不算，沒出拳時照常是快跑）
+      if (!e.repeat && this.freeMode.isActive && !this.returning && !this.params.p1AI) {
+        if (e.code === 'KeyR') this._pressDI('p1')
+        if (this.freeSupers[e.code]) this.combat.pressAttack('p1', this.freeSupers[e.code])
+        // 按下當下這一招已經碰到對手（canRush：打中或被防禦、可以取消的招）才算；揮空不預約，免得收招後變成原地衝刺
+        if (e.code === 'ShiftLeft' && this.p1?.canRush) this._pressRush('p1')
       }
       // 連按兩下方向鍵 = 衝刺：只有格鬥模式（自由模式用 Shift 快跑）
       if (!e.repeat && !this.freeMode.isActive) {
@@ -414,25 +485,22 @@ class FighterViewer {
         this._detectDash('p2', e.code)
       }
       if (!e.repeat && e.code === 'Digit0') this._togglePause() // 主鍵盤 0（數字鍵盤 0 是衝刺取消）
-      // Esc：立刻取消出拳 / 招式（格鬥模式全部重置；自由模式位置、面向保留），HP / DG / SG / WL 回到初始值
-      if (!e.repeat && e.code === 'Escape') {
-        this.freeMode.isActive ? this._cancelFreeMoves() : this.resetAll()
-        this.combat.resetGauges()
-      }
       // 介面 / 除錯 / AI / 遊戲速度快捷鍵；在 GUI 輸入框打字時不觸發
       if (!e.target.closest?.('input, textarea, select')) {
+        if (!e.repeat && e.code === 'KeyI') this._setInputsVisible(!this.params.showInputs)
         if (!e.repeat && e.code === 'KeyP') this._setFrameMeterVisible(!this.params.showFrameMeter)
         if (!e.repeat && e.code === 'KeyO') this._setDebugVisible(!this.params.showDebug)
         if (!e.repeat && e.code === 'KeyX') this._setXrayVisible(!this.params.showXray)
-        // 主鍵盤 1 ~ 0 留給除錯工具：1 = P1 AI、2 = P2 AI、0 = 暫停（數字鍵盤的數字是出招鍵，e.code 不同）
+        // 主鍵盤 1 ~ 0 留給除錯工具：1 = P1 AI、2 = P2 AI、3 = 重置狀態、0 = 暫停（數字鍵盤的數字是出招鍵，e.code 不同）
         if (!e.repeat && e.code === 'Digit1') this._toggleAI('p1')
         if (!e.repeat && e.code === 'Digit2') this._toggleAI('p2')
-        if (!e.repeat && e.code === 'KeyC') this.freeMode.switchFollow()
-        if (!e.repeat && e.code === 'KeyN' && !this.returning) this.freeMode.toggleFirstPerson()
+        if (!e.repeat && e.code === 'Digit3') this._resetState()
+        if (!e.repeat && e.code === 'KeyN') this.freeMode.switchFollow()
+        if (!e.repeat && e.code === 'KeyC' && !this.returning) this.freeMode.toggleFirstPerson()
         if (!e.repeat && e.code === 'Backslash') this._resetGui()
         if (!e.repeat && e.code === 'KeyB') this._setCameraCollision(!this.params.cameraCollision)
         if (!e.repeat && e.code === 'KeyH') this.startOrbitCamera()
-        if (!e.repeat && e.code === 'KeyM' && !this.returning) this.toggleFreeMode()
+        if (!e.repeat && e.code === 'KeyV' && !this.returning) this.toggleFreeMode()
         if (!e.repeat && e.code === 'KeyF') this._interact()
         // 遊戲速度：主鍵盤 Backspace 左邊的 - / =（數字鍵盤的 - + 不算，e.code 不同）；按住會連續調
         if (e.code === 'Minus') this._changeTimeScale(-this.timeScaleStep)
@@ -441,32 +509,78 @@ class FighterViewer {
       // 方向鍵、空白鍵預設會捲動頁面（空白鍵也會按到 GUI 上有焦點的按鈕）
       if (Object.values(this.p2Keys).includes(e.code) || [this.p1Keys.jump].flat().includes(e.code)) e.preventDefault() // ↓ 也會捲動頁面
       this.keys.add(e.code)
+      this._updateMotions()
       this._updateKeycaps()
     })
 
     window.addEventListener('keyup', e => {
       if (e.code === 'AltLeft' || e.code === 'AltRight') e.preventDefault() // 不要讓瀏覽器把焦點移到選單列
       this.keys.delete(e.code)
+      this._updateMotions()
       this._updateKeycaps()
     })
 
     // 切換視窗時 keyup 不會觸發，避免人物一直走
     window.addEventListener('blur', () => {
       this.keys.clear()
+      this._updateMotions()
       this._updateKeycaps()
     })
   }
 
-  /** 出招鍵（輕 / 中 / 重 / 衝刺取消 / 絕招）：P1 直接按、P2 按著數字鍵盤 + 按同一組鍵 */
+  /** 出招鍵（輕 / 中 / 重 / 動力衝擊 / 衝刺取消 / 絕招）：P1 直接按、P2 按著數字鍵盤 + 按同一組鍵 */
   _isAttackKey(code) {
     const k = this.p1Keys
-    return [k.light, k.medium, k.heavy, k.rush, ...k.superSlots].includes(code) || !!k.debugSupers[code]
+    return [k.light, k.medium, k.heavy, k.di, k.rush].includes(code) || !!k.debugSupers[code]
   }
 
-  /** 絕招欄位鍵 → 那一格放的招式 key（空格 = null） */
-  _getSlotMove(code) {
-    const index = this.p1Keys.superSlots.indexOf(code)
-    return index >= 0 ? this.roguelike.state.slots[index] || null : null
+  /** 方向鍵有變化：記錄雙方現在的方向（方向指令用） */
+  _updateMotions() {
+    const now = performance.now()
+    Object.entries({ p1: this.p1Keys, p2: this.p2Keys }).forEach(([slot, keys]) => {
+      const x = (this.keys.has(keys.right) ? 1 : 0) - (this.keys.has(keys.left) ? 1 : 0)
+      const isDown = this.keys.has(keys.down)
+      this.motions[slot].update(x, isDown, now)
+      if (slot === 'p1') this.inputHistory.setDirection(x, Number([keys.jump].flat().some(code => this.keys.has(code))) - Number(isDown), now)
+    })
+  }
+
+  /** 按攻擊鍵（light / medium / heavy）：前面完成方向指令、SG 夠就出絕招，否則出普通攻擊 */
+  _pressAttack(slot, button) {
+    this._logInput(slot, button)
+    this.combat.pressAttack(slot, this._getCommandMove(slot, button) ?? button)
+  }
+
+  /** 按動力衝擊 */
+  _pressDI(slot) {
+    this._logInput(slot, 'DI')
+    this.combat.pressAttack(slot, 'DI')
+  }
+
+  /** 按衝刺取消 */
+  _pressRush(slot) {
+    this._logInput(slot, 'rush')
+    this.combat.input[slot].rushLife = this.rushInputFrames
+  }
+
+  /** 按鍵紀錄只記 P1 */
+  _logInput(slot, key) {
+    if (slot === 'p1') this.inputHistory.press(key, performance.now())
+  }
+
+  /**
+   * 方向指令 + 攻擊鍵 → 絕招 key；沒完成指令、SG 不足、人在空中 = null（照常出普通攻擊）
+   * 格鬥模式的前 / 後看面向（起身等還不能轉身時看對手的位置，Fighter.inputSign）；自由模式固定 D = 前、A = 後（手的動作跟格鬥模式面向右時一樣）
+   */
+  _getCommandMove(slot, button) {
+    const fighter = this[slot]
+    if (!fighter || fighter.isAirborne) return null
+    const now = performance.now()
+    const dir = this.motions[slot].read(this.freeMode.isActive ? 1 : fighter.inputSign, now)
+    const key = dir && Object.keys(fighter.moves).find(k => fighter.moves[k].command?.dir === dir && fighter.moves[k].command.button === button)
+    if (!key || !this.combat.gauges[slot].canSuper(fighter.moves[key].sgCost)) return null
+    this.motions[slot].clear(now)
+    return key
   }
 
   /** 幀數表 + 連段傷害顯示 / 收合（P、GUI「顯示幀數表」）；下方的操作說明 (?) 不受影響 */
@@ -474,6 +588,13 @@ class FighterViewer {
     this.params.showFrameMeter = isVisible
     document.querySelectorAll('#frameMeter, #comboDebug').forEach(el => el.classList.toggle('is_uiHide', !isVisible))
     this.guiControllers?.showFrameMeter.updateDisplay()
+  }
+
+  /** P1 按鍵紀錄顯示 / 收合（I、GUI） */
+  _setInputsVisible(isVisible) {
+    this.params.showInputs = isVisible
+    this.inputHistory.setVisible(isVisible)
+    this.guiControllers?.showInputs.updateDisplay()
   }
 
   /** 透視剪影開關（X、GUI「被擋住時透視角色」），見 _updateXray */
@@ -495,6 +616,148 @@ class FighterViewer {
     this.guiControllers?.showDebug.updateDisplay()
   }
 
+  /** 自由模式滑鼠鍵（滑鼠鎖定中）：左鍵 = 輕攻擊、右鍵 = 重攻擊、左右一起按 = 中攻擊、中鍵 = 鎖定對手開關 */
+  _onMouseButton(button) {
+    if (button === 1) {
+      this.freeMode.toggleLockOn()
+      return
+    }
+    if (this.params.p1AI || this.returning || this.isMenuOpen) return
+    if (button !== 0 && button !== 2) return
+    // 第一個鍵先等 mouseChordTime 毫秒：期間按了另一個鍵 → 中攻擊，沒有就出原本的
+    const prev = this.mouseChord
+    if (prev && prev.button !== button) {
+      this._clearMouseChord()
+      this._pressMouseAttack('medium')
+      return
+    }
+    if (prev) this._flushMouseChord() // 同一個鍵連按：前一下先出
+    this.mouseChord = { button, timer: setTimeout(() => this._flushMouseChord(), this.mouseChordTime) }
+  }
+
+  /** 沒等到另一個滑鼠鍵：出原本的輕 / 重攻擊 */
+  _flushMouseChord() {
+    const { button } = this.mouseChord
+    this._clearMouseChord()
+    this._pressMouseAttack(button === 0 ? 'light' : 'heavy')
+  }
+
+  _clearMouseChord() {
+    clearTimeout(this.mouseChord?.timer)
+    this.mouseChord = null
+  }
+
+  _pressMouseAttack(key) {
+    // 等待期間離開自由模式、打開選單等：不出招
+    if (!this.freeMode.isActive || this.params.p1AI || this.returning || this.isMenuOpen) return
+    this._pressAttack('p1', key)
+  }
+
+  /** 重置狀態（主鍵盤 3）：立刻取消出拳 / 招式（格鬥模式全部重置；自由模式位置、面向保留），HP / DG / SG / WL 回到初始值 */
+  _resetState() {
+    if (this.returning) return
+    this.freeMode.isActive ? this._cancelFreeMoves() : this.resetAll()
+    this.combat.resetGauges()
+  }
+
+  /**
+   * 主選單開關（Esc）：開著時遊戲暫停（_update 的 gameDelta = 0）、清掉按著的鍵、放開滑鼠鎖定
+   * 關掉時自由模式重新鎖定滑鼠（瀏覽器不允許的話，點畫面再鎖定）；isRelock = false 不鎖（例如要看操作說明）
+   * 選升級牌、結算視窗開著時不開
+   */
+  _setMenuOpen(isOpen, { isRelock = true } = {}) {
+    if (!this.menuEl || this.isMenuOpen === isOpen) return
+    if (isOpen && this.roguelike.isMenuOpen) return
+    this.isMenuOpen = isOpen
+    this.menuEl.hidden = !isOpen
+    this.sound.setPaused(isOpen) // 主選單開著：聲音暫停，關掉後接著播
+    if (isOpen) {
+      this.menuOpenedAt = performance.now()
+      this.menuIndex = 0 // 每次打開都從第一個（繼續）開始
+      this.menuHover = null
+      this._showMenuFocus()
+      this.keys.clear()
+      this._updateKeycaps()
+      this.pointerLook.unlock()
+      return
+    }
+    if (this.menuEl.contains(document.activeElement)) document.activeElement.blur() // 關掉後空白鍵（跳）不會按到選單按鈕
+    if (isRelock && this.freeMode.isActive && !this.returning) this.pointerLook.lock()
+  }
+
+  /** 主選單開著時的按鍵：W / ↑、S / ↓ 上下選（頭尾循環）、F 確定（Enter / 空白鍵由按鈕本身的 click 處理） */
+  _onMenuKey(e) {
+    if (this.moveList.isOpen) {
+      // 招式表：W / S 捲動、F 返回
+      const scroll = { KeyW: -1, ArrowUp: -1, KeyS: 1, ArrowDown: 1 }[e.code]
+      if (scroll) {
+        e.preventDefault()
+        this.moveList.scroll(scroll)
+      } else if (e.code === 'KeyF' && !e.repeat) {
+        this._setMoveListOpen(false)
+      }
+      return
+    }
+    const count = this.menuBtns.length
+    if (!count) return
+    const move = { KeyW: -1, ArrowUp: -1, KeyS: 1, ArrowDown: 1 }[e.code]
+    if (move) {
+      e.preventDefault()
+      // 從目前顯示選中的那個開始移（滑鼠停在某個按鈕上時從它開始）
+      const from = this.menuHover ? this.menuBtns.indexOf(this.menuHover) : this.menuIndex
+      this.menuIndex = (from + move + count) % count
+      this.menuHover = null
+      this._showMenuFocus()
+      return
+    }
+    if (e.code === 'KeyF' && !e.repeat) {
+      e.preventDefault()
+      const btn = this.menuHover ?? this.menuBtns[this.menuIndex]
+      if (btn) this._onMenuAction(btn.dataset.action)
+    }
+  }
+
+  /** 主選單的選中顯示：滑鼠移上去的優先，否則鍵盤選的（is_active + focus，Enter / 空白鍵也按得到它） */
+  _showMenuFocus() {
+    const target = this.menuHover ?? this.menuBtns[this.menuIndex]
+    this.menuBtns.forEach(btn => btn.classList.toggle('is_active', btn === target))
+    if (this.isMenuOpen) target?.focus({ preventScroll: true })
+  }
+
+  /** 招式表開關：蓋在主選單上，關掉回到主選單 */
+  _setMoveListOpen(isOpen) {
+    if (isOpen) this.moveList.open()
+    else this.moveList.close()
+    this.menuEl.hidden = this.moveList.isOpen
+    if (!this.moveList.isOpen) this._showMenuFocus()
+  }
+
+  /** 主選單按鈕：繼續 / 重新開始 / 招式表 / 切換全螢幕 / 操作說明 */
+  _onMenuAction(action) {
+    if (action === 'resume') {
+      this._setMenuOpen(false)
+    } else if (action === 'restart') {
+      this._setMenuOpen(false, { isRelock: false })
+      this._restartFromMenu()
+    } else if (action === 'moves') {
+      this._setMoveListOpen(true)
+    } else if (action === 'fullscreen') {
+      // 選單留著（全螢幕切換後可以再按 Esc 回到遊戲）
+      if (document.fullscreenElement) document.exitFullscreen?.()
+      else document.documentElement.requestFullscreen?.().catch(() => {})
+    } else if (action === 'help') {
+      this._setMenuOpen(false, { isRelock: false }) // 游標留著，可以捲動、關掉操作說明
+      this.popups.find(p => p.root.id === 'help')?.toggle(true)
+    }
+  }
+
+  /** 主選單「重新開始」：自由模式直接切回格鬥模式，從第 1 層重來（雙方血量與量條重置、回到開場位置） */
+  _restartFromMenu() {
+    if (!this.p1 || !this.p2) return
+    if (this.freeMode.isActive) this.toggleFreeMode(true)
+    this.roguelike.reset()
+  }
+
   /** 單一玩家的 AI 操作開關（主鍵盤 1 / 2） */
   _toggleAI(slot) {
     this.params[`${slot}AI`] = !this.params[`${slot}AI`]
@@ -508,22 +771,14 @@ class FighterViewer {
     this.guiControllers?.timeScale.updateDisplay()
   }
 
-  /** 操作說明裡的按鍵示意：按著的鍵亮起；絕招欄位寫上目前放的招式名稱，空格變暗（is_locked） */
+  /** 操作說明裡的按鍵示意：按著的鍵亮起 */
   _updateKeycaps() {
-    this.keycapEls.forEach(el => {
-      el.classList.toggle('is_down', this.keys.has(el.dataset.key))
-      if (!this.p1Keys.superSlots.includes(el.dataset.key)) return
-      const move = this._getSlotMove(el.dataset.key)
-      el.classList.toggle('is_locked', !move)
-      const label = el.querySelector('small')
-      const text = move ? this.p1?.moves[move]?.name || move : '空'
-      if (label && label.textContent !== text) label.textContent = text
-    })
+    this.keycapEls.forEach(el => el.classList.toggle('is_down', this.keys.has(el.dataset.key)))
   }
 
   /**
-   * 死亡動畫播完：P2 → 暫停遊戲、出升級牌；P1 → 結算視窗
-   * 選完牌（roguelike onPicked）→ 下一層：雙方回到開場位置；P2 血量與量條回滿，P1 保留目前狀態再補一點（stageReward）
+   * 死亡動畫播完：P2 → 暫停遊戲、出升級樹；P1 → 結算視窗
+   * 選完（roguelike onPicked）→ 下一層：雙方回到開場位置；P2 血量與量條回滿，P1 保留目前狀態再補一點（stageReward）
    * 結算按「重新開始」→ 第 1 層：雙方血量與量條全部重置
    */
   _onKO(slot) {
@@ -532,10 +787,10 @@ class FighterViewer {
     else this.roguelike.gameOver() // P1 被打倒：結算（止步層數 + 評價），按「重新開始」從第 1 層重來
   }
 
-  /** 選完牌：P1 保留血量 / 量條，再補 stageReward；P2（新的對手）回滿 */
+  /** 選完升級：P1 保留血量 / 量條，再補 stageReward（含升級加的）；P2（新的對手）回滿 */
   _startNextStage() {
     const { p1, p2 } = this.combat.gauges
-    const { hpRate, dgBars, sgBars } = this.stageReward
+    const { hpRate, dgBars, sgBars } = this.roguelike.getStageReward()
     p1.hp = Math.min(p1.maxHp, p1.hp + p1.maxHp * hpRate)
     p1.addDg(p1.barSize * dgBars)
     p1.addSg(p1.barSize * sgBars)
@@ -611,7 +866,7 @@ class FighterViewer {
     this.params[slot] = name
     if (slot === 'p1') {
       this.footMarker.setTarget(this.p1)
-      this.roguelike.applyFighter(this.p1) // 換人物後重新套用升級（解鎖的絕招、攻擊力…）
+      this.roguelike.applyFighter(this.p1) // 換人物後重新套用升級（攻擊力、閃身步次數）
       this._updateKeycaps()
     }
     this.hud.setName(slot, name)
@@ -851,7 +1106,7 @@ class FighterViewer {
         onUpdate: realDelta => this._update(realDelta),
         onBeforeRender: realDelta => this._beforeRender(realDelta),
         onAfterRender: () => this._afterRender(),
-        getGameDelta: realDelta => (this.params.paused ? 0 : realDelta * this.params.timeScale),
+        getGameDelta: realDelta => this._getGameDelta(realDelta),
         isCameraLocked: () => this._isCameraLocked(),
         isFisheye: () => this.freeMode?.isActive && this.freeMode.isFirstPerson, // 第一人稱的輕微魚眼
         skipCameraCollision: () => !!this.freeMode?.isFirstPerson, // 第一人稱鏡頭在眼睛，不用避開
@@ -906,8 +1161,9 @@ class FighterViewer {
       canvas,
       controls: this.controls,
       onLook: (dx, dy) => this.freeMode.addLook(dx, dy),
-      onButton: button => (button === 1 ? this.freeMode.toggleLockOn() : this.freeMode.setLockOn(false)),
-      isBlocked: () => !!this.returning,
+      onButton: button => this._onMouseButton(button),
+      isBlocked: () => !!this.returning || this.isMenuOpen,
+      onLost: () => this._setMenuOpen(true), // 鎖定中按 Esc（Chrome 收不到 keydown）、切換視窗：打開主選單
     })
     this._applyStageLight()
     this._applySuperFog(0)
@@ -958,9 +1214,13 @@ class FighterViewer {
     this._applyEnemyStage() // 第 1 層：簡單
   }
 
-  /** 連按兩下同一個方向鍵（間隔 dashTapWindow 內）= 衝刺 */
+  /** 連按兩下同一個方向鍵（間隔 dashTapWindow 內）= 衝刺；中間按到下（或按著下）不算 */
   _detectDash(player, code) {
-    const { left, right } = player === 'p1' ? this.p1Keys : this.p2Keys
+    const { left, right, down } = player === 'p1' ? this.p1Keys : this.p2Keys
+    if (code === down || this.keys.has(down)) {
+      this.lastTap[player] = { code: '', time: 0 }
+      return
+    }
     if (code !== left && code !== right) return
 
     const now = performance.now()
@@ -1048,6 +1308,7 @@ class FighterViewer {
     timeFolder.add(atmo, 'weather', Object.keys(WEATHERS)).name('天氣').onChange(v => atmo.setWeather(v))
     timeFolder.add(atmo, 'transition', 0, 10, 0.5).name('天氣過渡（秒）')
     timeFolder.add(atmo, 'nightBright', 0, 1, 0.05).name('夜晚人物亮度').onChange(() => atmo.apply())
+    timeFolder.add(atmo, 'sceneNight', 0, 1, 0.05).name('夜晚場景亮度（室外）').onChange(() => atmo.apply())
     timeFolder.add(atmo.lightning, 'enabled').name('閃電（雨天）')
     timeFolder.add(atmo, 'triggerLightning').name('打一次閃電')
     // 黑暗霧：離中心點越遠越暗，最後看不到
@@ -1076,6 +1337,7 @@ class FighterViewer {
     const viewFolder = gui.addFolder('顯示 / 播放')
     this.guiControllers.timeScale = viewFolder.add(this.params, 'timeScale', 0, 2, 0.05).name('遊戲速度（- / =）')
     this.pauseController = viewFolder.add(this.params, 'paused').name('暫停（主鍵盤 0）')
+    this.guiControllers.showInputs = viewFolder.add(this.params, 'showInputs').name('顯示按鍵紀錄（I）').onChange(v => this._setInputsVisible(v))
     this.guiControllers.showFrameMeter = viewFolder.add(this.params, 'showFrameMeter').name('顯示幀數表 + 連段傷害（P）').onChange(v => this._setFrameMeterVisible(v))
     this.guiControllers.showXray = viewFolder.add(this.params, 'showXray').name('被擋住時透視角色（X）')
     this.guiControllers.cameraCollision = viewFolder.add(this.params, 'cameraCollision').name('鏡頭避開物體（B）').onChange(v => this._setCameraCollision(v))
@@ -1114,10 +1376,11 @@ class FighterViewer {
     addGauge(regenFolder, 'dgEmptyDelay', 'DG溢出後，回復CD', 0, 600, 10)
     addGauge(regenFolder, 'blockDgDelay', '防禦成功後，DG 回復CD', 0, 300, 5)
     addGauge(regenFolder, 'rushDgDelay', '衝刺取消後，DG 回復CD', 0, 300, 5)
+    addGauge(regenFolder, 'wlDgDelay', '扣白血時，DG 回復CD', 0, 300, 5)
 
     // 招式傷害：擊中時敵血量減少（空中重攻擊跟著重拳）
     const damageFolder = folder.addFolder('招式傷害')
-    const damageNames = { light: '輕拳', medium: '中拳', heavy: '重拳（含空中重攻擊）' }
+    const damageNames = { light: '輕拳', medium: '中拳', heavy: '重拳（含空中重攻擊、重連擊）', DI: '動力衝擊' }
     Object.entries(damageNames).forEach(([key, name]) => damageFolder.add(rules.damage, key, 0, 3000, 10).name(name))
     damageFolder.add(rules, 'superDamage', 0, 3000, 50).name('SA 默認每擊傷害')
 
@@ -1143,7 +1406,7 @@ class FighterViewer {
     let move = (this.keys.has(keys.right) ? 1 : 0) - (this.keys.has(keys.left) ? 1 : 0)
     const jumpKeys = [keys.jump].flat()
     // 下 + 後：站在原地防禦（不後退）；只按後是一邊後退一邊防禦
-    const isStandGuard = this.keys.has(keys.down) && move !== 0 && move === -fighter.facingSign
+    const isStandGuard = this.keys.has(keys.down) && move !== 0 && move === -fighter.inputSign
     if (isStandGuard) move = 0
     const isPostGuard = slot === 'p2' && this.params.p2Guard
     return { move, dash, jump: jumpKeys.some(code => this.keys.has(code)), guard: isStandGuard || isPostGuard, standGuard: isStandGuard }
@@ -1157,11 +1420,24 @@ class FighterViewer {
    * 命中（Combat 呼叫）：鏡頭晃動；格鬥模式另有命中鏡頭（第 1 段打中拉近、打飛那一下拉回）與受擊搖晃
    * 自由模式沒有命中鏡頭；受擊搖晃是沿 z 軸搖，自由模式會跟走位衝突，不做
    */
-  _onHit(attacker, target, { move, isLaunch, isBlock, hitstop }) {
+  _onHit(attacker, target, { move, isLaunch, isBlock, isAbsorb, clash, hitstop }) {
     this.freeMode.faceAttacker(attacker, target) // 自由模式：鏡頭跟隨的人被攻擊（含被防禦）→ 鏡頭平滑轉向攻擊方
+    if (clash) {
+      // 動力衝擊對撞：整段頓幀劇烈搖晃（雙方一起搖 + 晃鏡頭）
+      this.cameraShaker.start(clash.camera, hitstop / FPS)
+      if (this.freeMode.isActive) return
+      this._startShake([attacker, target], hitstop, clash.shakes, clash.amplitude)
+      this._startCloseUp(target, Infinity) // 用霸體接住的那一方是反制的人：特寫到他打中、或這招收招
+      return
+    }
+    if (isAbsorb && !this.freeMode.isActive) this._startShake(target, hitstop, 1) // 霸體擋下：輕輕震一下
     if (isBlock) return
     this.cameraShaker.start(this._getCameraShake(attacker))
+    const freeze = hitstop / FPS // 頓幀照原速，頓完才開始放慢；特寫也多停留這段
+    const isFlying = target.state === 'down' // 打飛（站著、跳躍中被打中）：不放慢、不特寫
+    if (move.slowMo && !isFlying) this.slowTime = -freeze
     if (this.freeMode.isActive) return
+    if (move.closeUp && !isFlying) this._startCloseUp(attacker, freeze + this.closeUp.hold)
     if (move.hitShake) this._startShake(target, hitstop, move.hitShake === true ? this.hitShake.cycles : move.hitShake)
     if (attacker.getCurrentMove()?.hitCamera) {
       if (isLaunch) this._releaseHitCamera(attacker)
@@ -1175,7 +1451,9 @@ class FighterViewer {
    * 自由模式：不演出、從動畫開頭直接播；回傳對手要凍結的幀數 = 格鬥模式演出凍結（拉近 + 停留）期間放招的人推進的幀數
    */
   _onSuperStart(fighter, key) {
+    this.slowTime = null
     if (!this.freeMode.isActive) {
+      if (this.hitCam?.hold != null) this._endHitCamera() // 特寫中放絕招：先回到一般鏡頭，演出結束才回得去
       this._startCinematic(fighter, key)
       return 0
     }
@@ -1229,6 +1507,31 @@ class FighterViewer {
     this.controls.enabled = false
   }
 
+  /**
+   * 特寫鏡頭（格鬥模式）：拉近到 fighter 後下方看兩人中間；已經在命中 / 特寫鏡頭中就從目前位置接過去
+   * @param {number} hold 停留幾秒（真實時間）後拉回；Infinity = 到這招收招、結束或被打斷為止
+   */
+  _startCloseUp(fighter, hold) {
+    const prev = this.hitCam
+    if (this._isCinematicCamera()) return
+    if (!prev) this._startHitCamera(fighter)
+    else if (prev.attacker !== fighter || prev.phase === 'out') {
+      prev.time = 0
+      prev.fromPos = this.camera.position.clone()
+      prev.fromTarget = this.controls.target.clone()
+    }
+    Object.assign(this.hitCam, { attacker: fighter, move: fighter.currentMove, phase: 'in', cfg: this.closeUp, hold })
+  }
+
+  /** 特寫鏡頭的位置：fighter 背後、往觀眾那側偏 angle 度，離地 height，看兩人中間 */
+  _getCloseUpPose(fighter) {
+    const { angle, distance, height, lookY } = this.closeUp
+    const a = THREE.MathUtils.degToRad(angle)
+    const target = new THREE.Vector3((this.p1.x + this.p2.x) / 2, lookY, 0)
+    const pos = new THREE.Vector3(fighter.x - fighter.facingSign * Math.cos(a) * distance, height, Math.sin(a) * distance)
+    return { pos, target }
+  }
+
   /** 命中鏡頭開始拉回一般鏡頭（打飛、或招式被中斷 / 結束）；attacker 有給時只拉回這個人的命中鏡頭 */
   _releaseHitCamera(attacker) {
     const h = this.hitCam
@@ -1249,7 +1552,7 @@ class FighterViewer {
     return !!this.cinematic && !this.cinematic.isCameraFree
   }
 
-  /** 透視剪影只開給鏡頭跟隨的人：自由模式 = 跟隨的人（C 切換），格鬥模式 = P1 */
+  /** 透視剪影只開給鏡頭跟隨的人：自由模式 = 跟隨的人（N 切換），格鬥模式 = P1 */
   _updateXray() {
     if (!this.p1 || !this.p2) return
     const target = this.params.showXray ? (this.freeMode.isActive ? this[this.freeMode.followSlot] : this.p1) : null
@@ -1264,7 +1567,7 @@ class FighterViewer {
   }
 
   /**
-   * 自由模式切換（M）：進入時中斷招式與演出，人物在場景裡自由走動（見 freeMode.js），鏡頭平滑轉成俯角看 P1
+   * 自由模式切換（V）：進入時中斷招式與演出，人物在場景裡自由走動（見 freeMode.js），鏡頭平滑轉成俯角看 P1
    * 離開時兩人飛回開場的格鬥位置（x = ±startGap / 2、面向對方），鏡頭移回格鬥模式的預設位置（見 _startFightReturn）
    * @param {boolean} isInstant 直接切回格鬥模式、不播過渡（換人物時）
    */
@@ -1369,6 +1672,7 @@ class FighterViewer {
     this.sound.stopAll()
     this.hitEffect.clear()
     this.cameraShaker.stop()
+    this.slowTime = null
   }
 
   /** 拉近後的鏡頭距離：目前距離 × zoomRate，但不比 superCamera.distance 更近（也不比目前更遠） */
@@ -1435,10 +1739,20 @@ class FighterViewer {
   _updateHitCamera(realDelta) {
     const h = this.hitCam
     const { blendIn, blendOut } = h.cfg
-    h.time += this.params.paused ? 0 : realDelta * this.params.timeScale * FPS
     const f = h.attacker
-    // 招式被中斷（受擊、換招）或沒打飛就結束：一樣拉回
-    if (h.phase === 'in' && (f.state !== 'attack' || f.currentMove !== h.move)) this._releaseHitCamera()
+    const isCloseUp = h.hold != null
+    const isAttacking = f.state === 'attack' && f.currentMove === h.move
+    if (isCloseUp) {
+      // 特寫：用真實時間（暫停、選單時不動）；時間到、或等打中的途中收招 / 被打斷就拉回
+      const dt = this._getGameDelta(1) > 0 ? realDelta : 0
+      h.time += dt * FPS
+      h.hold -= dt
+      if (h.phase === 'in' && (h.hold <= 0 || (h.hold === Infinity && !(isAttacking && f.getFrameType() !== 'recovery')))) this._releaseHitCamera()
+    } else {
+      h.time += this._getGameDelta(realDelta) * FPS
+      // 招式被中斷（受擊、換招）或沒打飛就結束：一樣拉回
+      if (h.phase === 'in' && !isAttacking) this._releaseHitCamera()
+    }
 
     const easeOut = t => 1 - (1 - t) ** 3
     const easeInOut = t => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2)
@@ -1446,7 +1760,7 @@ class FighterViewer {
     let toTarget
     let k
     if (h.phase === 'in') {
-      ;({ pos: toPos, target: toTarget } = this._getHitCameraPose(f, h.cfg, h.distance))
+      ;({ pos: toPos, target: toTarget } = isCloseUp ? this._getCloseUpPose(f) : this._getHitCameraPose(f, h.cfg, h.distance))
       k = easeOut(Math.min(1, h.time / blendIn))
     } else {
       toTarget = h.base.target.clone()
@@ -1494,10 +1808,15 @@ class FighterViewer {
     return shake || 0
   }
 
-  /** 受擊搖晃：頓幀 frames 幀內沿 z 軸搖完 cycles 次 */
-  _startShake(fighter, frames, cycles = this.hitShake.cycles) {
-    if (this.shake) this.shake.fighter.model.position.z = 0
-    this.shake = { fighter, time: 0, duration: frames / FPS, cycles }
+  /** 受擊搖晃：頓幀 frames 幀內沿 z 軸搖完 cycles 次（fighters 可以是一個人或陣列） */
+  _startShake(fighters, frames, cycles = this.hitShake.cycles, amplitude = this.hitShake.amplitude) {
+    this._stopShake()
+    this.shake = { fighters: [fighters].flat(), time: 0, duration: frames / FPS, cycles, amplitude }
+  }
+
+  _stopShake() {
+    this.shake?.fighters.forEach(f => { f.model.position.z = 0 })
+    this.shake = null
   }
 
   /**
@@ -1508,16 +1827,14 @@ class FighterViewer {
     const s = this.shake
     if (!s) return
     s.time += delta
-    const model = s.fighter.model
     if (s.time >= s.duration) {
-      model.position.z = 0
-      this.shake = null
+      this._stopShake()
       return
     }
-    const { amplitude } = this.hitShake
-    const { cycles } = s
+    const { cycles, amplitude } = s
     const phase = (s.time + 0.5 / FPS) / s.duration
-    model.position.z = amplitude * Math.sin(Math.PI * 2 * cycles * phase)
+    const z = amplitude * Math.sin(Math.PI * 2 * cycles * phase)
+    s.fighters.forEach(f => { f.model.position.z = z })
   }
 
   _togglePause() {
@@ -1529,6 +1846,7 @@ class FighterViewer {
   resetAll() {
     if (!this.p1 || !this.p2) return
     this._endHitCamera()
+    this.slowTime = null
     this.orbiter.end()
     if (this.cinematic) {
       // 鏡頭直接回到一般位置
@@ -1545,8 +1863,7 @@ class FighterViewer {
     this._applyStageLight()
     this._applySuperFog(0)
     this.hitEffect.clear()
-    if (this.shake) this.shake.fighter.model.position.z = 0
-    this.shake = null
+    this._stopShake()
     this.cameraShaker.stop()
     this.accumulator = 0
     this.combat.reset()
@@ -1599,7 +1916,7 @@ class FighterViewer {
     const { zoomIn, hold, zoomOut, spotFadeIn } = this.superCamera
     const easeOut = t => 1 - (1 - t) ** 3
     const easeInOut = t => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2)
-    c.time += this.params.paused ? 0 : realDelta * this.params.timeScale * FPS
+    c.time += this._getGameDelta(realDelta) * FPS
     const t = c.time
 
     // 拉近 + 停留期間：從 animStart 起，放招的人每過 1 幀推進 1 幀（animStart 在凍結結束之後的招式不推進）
@@ -1669,10 +1986,11 @@ class FighterViewer {
    * 之後 GameCore 會更新 OrbitControls（鏡頭沒被鎖住時）、天空、時間天氣
    */
   _update(realDelta) {
-    if (this.cinematic) this._updateCinematic(realDelta)
+    this._updateSlowMo(realDelta)
+    if (this.cinematic && !this.isMenuOpen) this._updateCinematic(realDelta)
 
     const fighters = this.p1 && this.p2 ? [this.p1, this.p2] : []
-    const gameDelta = this.params.paused ? 0 : realDelta * this.params.timeScale
+    const gameDelta = this._getGameDelta(realDelta)
     // 自由模式：不跑格鬥邏輯與畫面補間，人物由 FreeMode 直接移動
     const isFree = this.freeMode.isActive
     this.isFreeFrame = isFree // 渲染後還原姿勢時要知道這個畫面是哪種模式（_afterRender）
@@ -1716,9 +2034,49 @@ class FighterViewer {
     }
   }
 
+  /**
+   * 第一人稱的畫面四周染色：鏡頭跟隨的人衝刺取消發光 → 綠（rush.glowColor）、受擊紅光 → 紅（FLASH_COLOR）
+   * 強度跟人物身上的顏色一樣（Fighter.effectLevels），不是第一人稱時全部清掉
+   */
+  _updateScreenTint() {
+    const fm = this.freeMode
+    const fighter = fm.isActive && fm.isFirstPerson ? this[fm.followSlot] : null
+    const levels = fighter ? fighter.effectLevels : { glow: 0, flash: 0 }
+    const colors = { glow: fighter?.rush.glowColor, flash: FLASH_COLOR }
+    Object.entries(this.tintEls).forEach(([key, el]) => {
+      if (!el) return
+      const opacity = String(Math.round(levels[key] * 1000) / 1000) // 跟 style.opacity 讀回來的格式一樣，沒變就不寫
+      if (el.style.opacity !== opacity) el.style.opacity = opacity
+      if (colors[key] != null && levels[key] > 0) el.style.setProperty('--clr', `#${new THREE.Color(colors[key]).getHexString()}`)
+    })
+  }
+
+  /** 遊戲時間（秒）：暫停、主選單開著 = 0，否則真實時間 × 遊戲速度 × 打中放慢 */
+  _getGameDelta(realDelta) {
+    return this.params.paused || this.isMenuOpen ? 0 : realDelta * this.params.timeScale * this._getSlowRate()
+  }
+
+  /** 打中放慢的速度倍率：time 秒內 = rate，之後 fade 秒內恢復到 1 */
+  _getSlowRate() {
+    if (this.slowTime == null || this.slowTime < 0) return 1 // 負數 = 還在頓幀
+    const { rate, time, fade } = this.slowMo
+    const k = fade > 0 ? Math.min(1, Math.max(0, (this.slowTime - time) / fade)) : Number(this.slowTime >= time)
+    return rate + (1 - rate) * k
+  }
+
+  /** 打中放慢的計時（真實時間，暫停、主選單開著時不動） */
+  _updateSlowMo(realDelta) {
+    if (this.slowTime == null || this.params.paused || this.isMenuOpen) return
+    this.slowTime += realDelta
+    if (this.slowTime >= this.slowMo.time + this.slowMo.fade) this.slowTime = null
+  }
+
   /** 渲染前（GameCore hooks.onBeforeRender）：HUD、霧的中心、人物的霧、互動物件、透視剪影 */
   _beforeRender(realDelta) {
-    const gameDelta = this.params.paused ? 0 : realDelta * this.params.timeScale
+    const gameDelta = this._getGameDelta(realDelta)
+    // 鏡頭這個畫面已經移動 / 轉動完，但 matrixWorldInverse 要到 render 才會更新；
+    // 先更新，HTML 提示（F 坐下、座標）換算螢幕位置時才不會用到上一個畫面的鏡頭，快速轉視角時跟不上
+    this.camera.updateMatrixWorld()
     this.hud.update(realDelta)
     this.hud.updateGauges(this.combat.gauges)
     this.hud.updateComboDebug(this.combat.comboStats)
@@ -1726,6 +2084,7 @@ class FighterViewer {
     this._updateDarkFogCenter()
     this._updateFighterFog()
     this._updateProps(gameDelta)
+    this._updateScreenTint()
     this._updateXray()
     this._updateWeatherSound()
   }

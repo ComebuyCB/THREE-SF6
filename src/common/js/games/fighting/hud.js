@@ -135,6 +135,8 @@ export class Hud {
       if (!g) return
       els.hp.style.setProperty('--hp', g.hp / g.maxHp)
       els.hp.style.setProperty('--wl', Math.min(g.wl, g.hp) / g.maxHp) // 虛血最多畫到剩下的血量
+      this._fitCells(els.dg, els.dgCells, g.dgMaxBars)
+      this._fitCells(els.sg, els.sgCells, g.maxBars)
       this._setCells(els.dgCells, g.dg, g.barSize)
       this._setCells(els.sgCells, g.sg, g.barSize)
       this._setText(els.sgNum, Math.floor(g.sg / g.barSize))
@@ -188,6 +190,17 @@ export class Hud {
   }
 
   // internal
+
+  /** 格數跟 HTML 的不一樣時補 / 拿掉格子 */
+  _fitCells(rootEl, cells, count) {
+    while (cells.length < count) {
+      const cell = document.createElement('span')
+      cell.className = '_cell'
+      rootEl.append(cell)
+      cells.push(cell)
+    }
+    while (cells.length > count) cells.pop().remove()
+  }
 
   /** 分格量條：每格 barSize 點，寫入每格的填滿比例（--fill），滿格加 is_full */
   _setCells(cells, value, barSize) {

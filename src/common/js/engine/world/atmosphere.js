@@ -41,7 +41,11 @@ export class Atmosphere {
       // 夜晚燈光亮度 0 ~ 1：晚上的環境光、月光往白天拉（0 = 真實的暗、1 = 跟白天一樣亮、不偏藍）
       // 烘焙光影的場景本來就不會變暗，只有吃燈光的人物、物件會；拉高讓人物跟場景一樣亮
       nightBright: 0,
+      // 室外場景模型的亮度（onSceneLight）：白天 1、深夜 sceneNight，中間跟著天色漸變；室內一直是 1
+      // 烘焙光影的場景不吃燈光，晚上不調的話會跟白天一樣亮
+      sceneNight: 0.45,
       onLights: null, // ({ hemi, dir }) → 主光、環境光的基本亮度（沒給 = 直接設在燈上）
+      onSceneLight: null, // (value) → 場景模型的亮度倍率（例如 Environment.setLightLevel）
     }
 
     // 1. merge options
@@ -185,6 +189,9 @@ export class Atmosphere {
     this.hemi.groundColor.copy(COLORS.nightGround).lerp(COLORS.dayGround, lit)
 
     this.sky.setDaylight(Math.min(2, this.sky.daylight + f)) // 全景圖天空也閃
+    // 場景模型亮度：室外跟著天色（深夜 sceneNight），閃電時照亮；室內不變
+    const sceneLight = this.isIndoor ? 1 : THREE.MathUtils.lerp(this.sceneNight, 1, day)
+    this.onSceneLight?.(Math.min(1, sceneLight + f * 0.6))
     if (this.onLights) this.onLights({ hemi: hemiPower, dir: dirPower + f * 1.5 })
     else {
       this.hemi.intensity = hemiPower

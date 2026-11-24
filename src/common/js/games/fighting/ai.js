@@ -7,10 +7,10 @@
  * - 難度：setLevel('easy' | 'normal' | 'hard' | 'expert')，見 AI_LEVELS
  */
 
-// 連段路線：第一招打中後依第一招選路線；'rush' = 按 0 衝刺取消、'super' = 絕招
+// 連段路線：第一招打中後依第一招選路線；'rush' = 按 0 衝刺取消、'super' = 絕招、'TC_…' = 衍生攻擊（按衍生鍵，moveSets.js tc 的 by）
 const COMBOS = [
-  ['heavy', 'rush', 'heavy', 'medium', 'rush', 'medium', 'light', 'rush', 'light', 'light', 'light', 'super'],
-  ['medium', 'medium', 'rush', 'medium', 'medium', 'rush', 'heavy', 'medium', 'super'],
+  ['heavy', 'rush', 'heavy', 'TC_HH', 'rush', 'medium', 'light', 'rush', 'light', 'light', 'light', 'super'],
+  ['medium', 'medium', 'rush', 'medium', 'medium', 'rush', 'heavy', 'TC_HH', 'super'],
   ['light', 'light', 'light', 'rush', 'light', 'light', 'light', 'super'],
   ['light', 'light', 'rush', 'light', 'medium', 'rush', 'medium', 'heavy', 'super'],
 ]
@@ -34,6 +34,7 @@ const COMBOS = [
  *   cornerEscape：被逼到牆邊、對手貼近時，有機會往前跳過對手逃出牆角
  *   counterPoke：截擊。對手出慢的拳（例如重拳）時，算對手還有幾幀出判定；自己更快的拳（輕 / 中）來得及先打到、距離也夠，就直接出拳打斷
  *   whiffSuper：對手揮空時，算收招還剩幾幀；whiffSuperMove（閃身步）從按下到打到來得及，就用它反擊
+ *   diCounterRate：看到對手出動力衝擊，反應時間後也出動力衝擊反擊的機率（DG 要夠）
  *   reversal：被壓制（短時間內連續防禦 pressureBlocks 次）時用無敵絕招 reversalMove（狗熊哆嗦毛）反打：
  *     - 看準時機（reversalRate）：對手下一招的攻擊判定會落在無敵時間內才放
  *     - 無條件（reversalRandomRate）：連防到第 pressureBlocks 次、一能動就直接放，不管時機（可能被擋 / 揮空）
@@ -44,12 +45,14 @@ export const AI_LEVELS = {
     name: '簡單',
     comboDropRate: 0.25,
     guardRate: 0.5,
+    diCounterRate: 0.1,
     reaction: [10, 18]
   },
   normal: { name: '中等' },
   hard: {
     name: '進階',
     guardRate: 0.8,
+    diCounterRate: 0.5,
     reaction: [6, 12],
     attackWindows: WINDOWS,
     antiAir: true,
@@ -59,6 +62,7 @@ export const AI_LEVELS = {
   expert: {
     name: '困難',
     guardRate: 0.95,
+    diCounterRate: 0.7,
     reaction: [4, 8],
     attackWindows: WINDOWS,
     whiffPunish: true,
@@ -94,7 +98,7 @@ export class FighterAI {
       rawSuperRate: 0.03, // 在出拳距離內直接放絕招的機率
       jumpInRate: 0.08, // 中距離跳入的機率
       supers: ['dog_bear', 'shake_head', 'kick_ball', 'dodge_step'], // 連段 / 直接放用的絕招（kick_ball 是抓取，不放進連段）
-      canSuper: () => true, // 現在能不能放絕招（SG 滿 1 格；main.js 提供）
+      canSuper: () => true, // (key) → 現在 SG 夠不夠放這招絕招（沒給 key = 夠不夠 1 格；main.js 提供）
       getGauges: () => null, // () => { self, opp }：雙方的 Gauge（gaugeAware 用；main.js 提供）
       killHp: 2500, // gaugeAware：對手血量低於這個值，連段改接絕招收尾
       getSuperStartup: () => Infinity, // (fighter, key) → 絕招從按下到出判定、對手實際經過的幀數（含演出凍結；main.js 提供）
@@ -108,6 +112,7 @@ export class FighterAI {
       airToAirRate: 0.35, // antiAir：對手跳過來時，自己也跳起來空中迎擊的機率（其餘在地面等落地出拳）
       // 以下是難度相關（見 AI_LEVELS），預設 = 中等
       comboDropRate: 0,
+      diCounterRate: 0.3,
       attackWindows: null,
       whiffPunish: false,
       dodgeGrab: false,
@@ -171,6 +176,7 @@ export class FighterAI {
     this.combo = null // 連段中：{ route, step, pressedStep, idle }
     this.guard = null // 對手這一招的防禦決定：{ at, will }
     this.punish = null // 對手這一招收招時是否反擊
+    this.diCounter = null // 用動力衝擊反擊對手的動力衝擊：{ at, until }
     this.prev = { self: null, opp: null } // 上一幀的狀態，判斷「剛開始出招」用
     this.comboFrom = null // 已經判斷過要不要連段的那次出招（同一下命中只判斷一次）
   }
@@ -212,6 +218,9 @@ export class FighterAI {
       const isThreat = dist < 2.4 || move?.isSuper
       this.guard = isThreat ? { at: this.frame + randInt(...this.reaction), will: Math.random() < guardRate } : null
       this.punish = Math.random() < this.punishRate
+      // 對手出動力衝擊：反應時間後也出動力衝擊（要在對手的攻擊判定前出，才有霸體接住）
+      const isCounter = opp.currentMove === 'DI' && dist < 2.4 && Math.random() < this.diCounterRate
+      this.diCounter = isCounter ? { at: this.frame + randInt(...this.reaction), until: this.frame + 30 } : null
     }
 
     // 1. 連段
@@ -234,7 +243,7 @@ export class FighterAI {
     const revMove = self.moves[this.reversalMove]
     const isPressured = this.blockTimes.length >= this.pressureBlocks
     if (!isPressured) this.pressureRolled = false
-    if (this.reversal && isPressured && !this.pressureRolled && self.canAct && revMove && this.canSuper()) {
+    if (this.reversal && isPressured && !this.pressureRolled && self.canAct && revMove && this.canSuper(this.reversalMove)) {
       this.pressureRolled = true // 這一輪壓制只骰一次
       if (Math.random() < this.reversalRandomRate) {
         this.blockTimes = []
@@ -251,7 +260,7 @@ export class FighterAI {
       // reversal（看準時機）：被壓制中、對手的判定會落在無敵時間內 → reversalRate 機率用無敵絕招反打
       // 絕招從出招到第一次攻擊判定都無敵（invincibleFrames 更長時照它）；演出凍結時對手也不動，無敵從遊戲恢復後算
       const invincible = Math.max(revMove?.invincibleFrames ?? 0, this.getSuperStartup(self, this.reversalMove))
-      if (this.reversal && isPressured && revMove && this.canSuper() && toActive <= invincible - 2 && toActive > 1) {
+      if (this.reversal && isPressured && revMove && this.canSuper(this.reversalMove) && toActive <= invincible - 2 && toActive > 1) {
         this.counteredMove = oppMoveStart // 不管有沒有放，這一招只判斷一次
         if (Math.random() < this.reversalRate) {
           this.blockTimes = []
@@ -272,6 +281,17 @@ export class FighterAI {
           out.attack = key
           return out
         }
+      }
+    }
+
+    // 1.7 diCounter：用動力衝擊反擊對手的動力衝擊
+    if (this.diCounter && this.frame >= this.diCounter.at) {
+      const isLate = this.frame > this.diCounter.until || opp.state !== 'attack' || opp.currentMove !== 'DI'
+      if (isLate) this.diCounter = null
+      else if (self.canAct && (this.getGauges()?.self.dg ?? Infinity) >= (self.moves.DI?.dgCost ?? Infinity)) {
+        this.diCounter = null
+        out.attack = 'DI'
+        return out
       }
     }
 
@@ -330,7 +350,7 @@ export class FighterAI {
     if (opp.state === 'attack' && opp.getFrameType() === 'recovery' && (this.punish || isWhiff)) {
       const recoveryLeft = opp.stateLength - opp.stateFrame
       // whiffSuper：對手揮空、收招剩下的幀數夠閃身步從按下打到 → 用閃身步反擊
-      if (this.whiffSuper && isWhiff && this.canSuper() && dist <= this.whiffSuperRange && self.moves[this.whiffSuperMove]
+      if (this.whiffSuper && isWhiff && this.canSuper(this.whiffSuperMove) && dist <= this.whiffSuperRange && self.moves[this.whiffSuperMove]
         && this.getSuperStartup(self, this.whiffSuperMove) + 2 < recoveryLeft) {
         this.punish = false
         out.attack = this.whiffSuperMove
@@ -529,9 +549,9 @@ export class FighterAI {
     return inRange.find(k => (r -= weights[k]) <= 0) || inRange[inRange.length - 1]
   }
 
-  /** 隨機挑一個這個人物有動作的絕招 */
+  /** 隨機挑一個這個人物有動作、SG 夠的絕招；沒有 = null */
   _pickSuper(self) {
-    const list = this.supers.filter(k => self.actions[k] && self.moves[k] && !self.lockedMoves?.has(k)) // 還沒解鎖的不放
+    const list = this.supers.filter(k => self.actions[k] && self.moves[k] && this.canSuper(k))
     return list.length ? pick(list) : null
   }
 
@@ -546,7 +566,7 @@ export class FighterAI {
       const forced = this.forceRoute?.[0] === self.currentMove ? this.forceRoute : null
       const route = forced ? [forced] : COMBOS.filter(c => c[0] === self.currentMove)
       if (route.length && (forced || Math.random() < this.comboRate)) {
-        this.combo = { route: pick(route), step: 1, pressedStep: 0, idle: 0, superKey: this._pickSuper(self) }
+        this.combo = { route: pick(route), step: 1, pressedStep: 0, idle: 0, superKey: this._pickSuper(self) ?? this.whiffSuperMove }
       }
       this.forceRoute = null
       this.comboFrom = self // 同一下命中只判斷一次（回到非出招狀態時清掉）
@@ -583,7 +603,7 @@ export class FighterAI {
     // gaugeAware：對手血量低、絕招量條夠 → 下一步直接接絕招收尾（衝刺取消那一步不能直接接，跳過）
     const gauges = this.getGauges()
     if (this.gaugeAware && gauges && combo.superKey && combo.route[combo.step] !== 'super' && combo.route[combo.step] !== 'rush'
-      && gauges.opp.hp <= this.killHp && this.canSuper()) {
+      && gauges.opp.hp <= this.killHp && this.canSuper(combo.superKey)) {
       combo.route = [...combo.route.slice(0, combo.step), 'super']
     }
     // gaugeAware：動力槽不夠衝刺取消（會產生虛血、扣血）→ 連段停在這裡
@@ -595,8 +615,8 @@ export class FighterAI {
     const next = combo.route[combo.step]
     const nextKey = next === 'super' ? combo.superKey : next
 
-    // SG 不滿 1 格：連段停在 SA 前
-    if (next === 'super' && !this.canSuper()) {
+    // SG 不夠：連段停在 SA 前
+    if (next === 'super' && !this.canSuper(combo.superKey)) {
       this.combo = null
       return false
     }
@@ -612,8 +632,9 @@ export class FighterAI {
       out.attack = nextKey
       combo.pressedStep = combo.step
     } else if (self.state === 'attack' && self.hitConfirmed) {
-      // 攻擊取消：打中後馬上按下一招（命中當下還在預約時段內；過了的話由收招預約在招式結束時接上）
-      out.attack = nextKey
+      // 攻擊取消：打中後馬上按下一招（命中當下還在預約時段內；過了的話由收招預約在招式結束時接上）；衍生攻擊按衍生鍵
+      const derive = self.derives[self.currentMove]?.find(d => d.to === nextKey)
+      out.attack = derive?.by[0] ?? nextKey
       combo.pressedStep = combo.step
     }
     return true

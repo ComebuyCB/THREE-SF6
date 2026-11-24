@@ -1,87 +1,47 @@
 /**
- * Roguelike：關卡制 + 每關結束選 1 張升級牌（試做）
- * - P2 血量歸 0、倒地後（起身動畫前 1 幀，見 Combat hooks.onKO）出現 choices 張牌，選 1 張套用到 P1
- * - 初始只有 startSupers 的絕招，其他絕招要靠「習得」牌解鎖，依序放進絕招欄位（數字鍵盤 4 / 5 / 6），欄位滿了就不再出「習得」
- * - 每次出 3 張牌，三類各 1 張（GROUPS）：絕招 / 攻擊與體力 / 量條回復；某類沒有可以出的牌時改從其他類補
- * - 升級分兩種：
- *   fighter 類（攻擊力、招式變化、解鎖）：記在 state，換人物（新的 Fighter）時由 applyFighter 重新套用
- *   gauge 類（HP 上限、動力槽 / 絕招量條回復）：選到時直接改 P1 的 Gauge（Gauge 不會因換人物重建；重新開始時還原）
+ * Roguelike：關卡制 + 每關結束在升級樹選 1 個節點（試做）
+ * - P2 血量歸 0、倒地後（見 Combat hooks.onKO）打開升級樹，LINES 每條線各往下一級，選 1 條升級，套用到 P1
+ * - 升級等級記在 state.levels；換人物（新的 Fighter）時由 applyFighter 重新套用，量條類直接改 P1 的 Gauge（重新開始時還原）
+ * - 絕招一開始就全部可以用（方向指令 + 攻擊鍵，SG 不足不能出）
  *
- * 新增升級牌：在 CARDS 加一筆 { id, group, title, desc(run), isAvailable(run), apply(run, ctx) }
- *   ctx = { fighter, gauge }（P1）；desc / isAvailable 可省略
+ * 新增升級線：在 LINES 加一筆 { id, title, node, max, desc(run, level) }
+ *   node = 每個節點的簡短文字；max = 最多幾級（沒填 = 無上限）；desc 的 level = 選了之後的等級
+ *   效果寫在 applyFighter / _applyGauge / getStageReward（用 this.getLevel(id)）
  */
 
-// 牌的分類（出牌時每類各抽 1 張，照這個順序排）
-const GROUPS = [
-  { id: 'super', name: '絕招' },
-  { id: 'power', name: '攻擊 / 體力' },
-  { id: 'gauge', name: '量條回復' },
-]
+const REGEN_RATE = 0.5 // 量條線：每級 SG / DG 回復速度加原本的幾成
+const REGEN_BARS = 1 // 量條線：每級在關卡開始時 SG / DG 各多補幾格
+const HP_ADD = 2000 // 體力線：每級 HP 上限加多少
+const HEAL_RATE = 0.1 // 體力線：每級過關時多回復最大血量的幾成
+const ATTACK_RATE = 0.2 // 攻擊線：每級傷害加原本的幾成
+const WINDOW = 5 // 無上限的線：畫面上一次顯示幾個節點
 
-const CARDS = [
-  // ---------- 絕招 ----------
+const LINES = [
   {
-    id: 'unlock',
-    group: 'super',
-    // 抽牌時決定要解鎖哪一招（payload），每張「習得」牌各自不同
-    makePayload: run => pick(run.getLockedSupers()),
-    // 還有沒學的絕招、而且絕招欄位還有空格
-    isAvailable: run => run.getLockedSupers().length > 0 && run.state.slots.length < run.slotLabels.length,
-    title: (run, key) => `習得：${run.getMoveName(key)}`,
-    desc: (run, key) => `解鎖絕招「${run.getMoveName(key)}」，放進絕招欄位（數字鍵盤 ${run.slotLabels[run.state.slots.length]}）`,
-    apply: (run, ctx, key) => {
-      run.state.slots.push(key)
-      run.applyFighter(ctx.fighter)
-    },
+    id: 'dodge',
+    title: run => run.getMoveName('dodge_step'),
+    node: '+1 次',
+    desc: (run, level) => `打中時多穿越 1 次，加在最後一擊（2000）之前，共多 ${level} 次；多出來的每一次傷害 -50，最多 -300`,
   },
   {
-    id: 'dodgeStep',
-    group: 'super',
-    isAvailable: run => run.state.slots.includes('dodge_step'),
-    title: run => `${run.getMoveName('dodge_step')} +1 次`,
-    desc: run => `打中時多穿越 1 次，加在最後一擊（2000）之前（目前多 ${run.state.dodgeStep} 次）；多出來的每一次傷害 -50，最多 -300`,
-    apply: (run, ctx) => {
-      run.state.dodgeStep++
-      run.applyFighter(ctx.fighter)
-    },
+    id: 'regen',
+    title: () => 'SG & DG',
+    node: '+50%',
+    max: 4,
+    desc: (run, level) => `SG、DG 回復速度 ×${1 + REGEN_RATE * level}；每次關卡開始時 SG、DG 各多補 ${REGEN_BARS * level} 格`,
   },
-
-  // ---------- 攻擊 / 體力 ----------
+  {
+    id: 'vital',
+    title: () => '體力',
+    node: `+${HP_ADD}`,
+    max: 5,
+    desc: (run, level) => `HP 上限 +${HP_ADD * level}；每次過關回復最大血量的 ${Math.round((run.getBaseReward().hpRate + HEAL_RATE * level) * 100)}%`,
+  },
   {
     id: 'attack',
-    group: 'power',
-    title: () => '攻擊力 +20%',
-    desc: run => `所有招式傷害 ×${(1 + 0.2 * (run.state.attack + 1)).toFixed(1)}（目前 ×${(1 + 0.2 * run.state.attack).toFixed(1)}）`,
-    apply: (run, ctx) => {
-      run.state.attack++
-      run.applyFighter(ctx.fighter)
-    },
-  },
-  {
-    id: 'maxHp',
-    group: 'power',
-    title: () => 'HP 上限 +1000',
-    desc: (run, _, ctx) => `HP 上限 ${ctx.gauge.maxHp} → ${ctx.gauge.maxHp + 1000}，並立刻回復 1000 HP`,
-    apply: (run, ctx) => {
-      ctx.gauge.maxHp += 1000
-      ctx.gauge.hp = Math.min(ctx.gauge.maxHp, ctx.gauge.hp + 1000)
-    },
-  },
-
-  // ---------- 量條回復 ----------
-  {
-    id: 'dgRegen',
-    group: 'gauge',
-    title: () => '動力槽回復 +50%',
-    desc: (run, _, ctx) => `動力槽每秒回復 ${Math.round(ctx.gauge.dgRegen)} → ${Math.round(ctx.gauge.dgRegen * 1.5)}`,
-    apply: (run, ctx) => { ctx.gauge.dgRegen *= 1.5 },
-  },
-  {
-    id: 'sgRegen',
-    group: 'gauge',
-    title: () => '絕招量條回復 +50%',
-    desc: (run, _, ctx) => `絕招量條每秒回復 ${Math.round(ctx.gauge.sgRegen)} → ${Math.round(ctx.gauge.sgRegen * 1.5)}`,
-    apply: (run, ctx) => { ctx.gauge.sgRegen *= 1.5 },
+    title: () => '攻擊力',
+    node: '+20%',
+    desc: (run, level) => `所有招式傷害 ×${(1 + ATTACK_RATE * level).toFixed(1)}`,
   },
 ]
 
@@ -103,29 +63,14 @@ const RANKS = [
   { maxStage: Infinity, text: '登峰造極！' },
 ]
 
-function pick(list) {
-  return list[Math.floor(Math.random() * list.length)]
-}
-
-function shuffle(list) {
-  const a = [...list]
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[a[i], a[j]] = [a[j], a[i]]
-  }
-  return a
-}
-
 export class Roguelike {
   constructor(options) {
     const def = {
       el: '#cardPick',
-      choices: 3, // 每次出幾張牌
-      startSupers: ['dodge_step'], // 一開始就會的絕招（依序放進絕招欄位）
-      slotLabels: ['4', '5', '6'], // 絕招欄位的按鍵顯示文字；欄位數 = 最多能學幾招
       enemyHpPerStage: 500, // 敵人每往上一層 HP 上限多多少
       getContext: () => null, // () => { fighter, gauge }：P1 目前的 Fighter 與 Gauge
-      onPicked: null, // (card) => 選完牌（main.js 開始下一關）
+      getBaseReward: () => ({ hpRate: 0, dgBars: 0, sgBars: 0 }), // () => 過關補給的基本值（main.js stageReward）
+      onPicked: null, // (line) => 選完升級（main.js 開始下一關）
       gameOverEl: '#gameOver', // P1 被打倒的結算視窗
       onRestart: null, // () => 按「重新開始」（main.js 雙方回到開場）
     }
@@ -155,7 +100,6 @@ export class Roguelike {
     this.stage = 1
     this.isChoosing = false
     this.isGameOver = false
-    this.offer = [] // 目前出的牌：[{ card, payload }]
     this.gaugeBase = null // 第一次升級量條前的原始數值，重新開始時還原
     this.state = this._newState()
 
@@ -173,7 +117,7 @@ export class Roguelike {
 
   // public
 
-  /** 選牌或結算視窗開著：遊戲停住、遊戲按鍵不理 */
+  /** 升級樹或結算視窗開著：遊戲停住、遊戲按鍵不理 */
   get isMenuOpen() {
     return this.isChoosing || this.isGameOver
   }
@@ -191,6 +135,12 @@ export class Roguelike {
   /** 重新開始：回到第 1 層，升級全部清掉（量條回復速度還原），之後由 onRestart 讓雙方回到開場 */
   restart() {
     if (!this.isGameOver) return
+    this.reset()
+  }
+
+  /** 不管有沒有結算都從第 1 層重來（主選單「重新開始」）；選升級中不處理 */
+  reset() {
+    if (this.isChoosing) return
     const ctx = this.getContext()
     if (ctx?.gauge && this.gaugeBase) Object.assign(ctx.gauge, this.gaugeBase)
     this.gaugeBase = null
@@ -198,7 +148,7 @@ export class Roguelike {
     this.stage = 1
     this.applyFighter(ctx?.fighter)
     this.isGameOver = false
-    this.overEl.hidden = true
+    if (this.overEl) this.overEl.hidden = true
     this.onRestart?.()
   }
 
@@ -217,50 +167,54 @@ export class Roguelike {
     return baseHp + this.enemyHpPerStage * (stage - 1)
   }
 
-  /** P2 被打倒：出牌（已經在選就不理） */
+  /** P2 被打倒：打開升級樹（已經開著就不理） */
   open() {
-    const ctx = this.getContext()
-    if (this.isMenuOpen || !ctx?.fighter || !this.rootEl) return
-    // 每類各抽 1 張；某類沒有可以出的牌，就從其他類剩下的牌補
-    const available = shuffle(CARDS.filter(card => !card.isAvailable || card.isAvailable(this)))
-    const picked = GROUPS.map(group => available.find(card => card.group === group.id)).filter(Boolean)
-    const rest = available.filter(card => !picked.includes(card))
-    while (picked.length < this.choices && rest.length) picked.push(rest.shift())
-    this.offer = picked.slice(0, this.choices).map(card => ({ card, payload: card.makePayload?.(this) }))
-    this._render(ctx)
+    if (this.isMenuOpen || !this.getContext()?.fighter || !this.rootEl) return
+    this._render()
     this.isChoosing = true
     this.rootEl.hidden = false
   }
 
-  /** 選第 index 張（0 起算；按鍵 1 / 2 / 3 或點牌） */
+  /** 選第 index 條線（0 起算；按鍵 1 ~ 4 或點擊）；已經滿級的線不能選 */
   choose(index) {
-    const chosen = this.offer[index]
+    const line = LINES[index]
     const ctx = this.getContext()
-    if (!this.isChoosing || !chosen || !ctx) return
+    if (!this.isChoosing || !line || !ctx || this._isMax(line)) return
     this.gaugeBase ??= { maxHp: ctx.gauge.maxHp, dgRegen: ctx.gauge.dgRegen, sgRegen: ctx.gauge.sgRegen }
-    chosen.card.apply(this, ctx, chosen.payload)
+    this.state.levels[line.id]++
+    this._applyGauge(ctx.gauge)
+    this.applyFighter(ctx.fighter)
     this.isChoosing = false
     this.rootEl.hidden = true
     this.stage++
-    this.onPicked?.(chosen)
+    this.onPicked?.(line)
   }
 
-  /** 把 fighter 類的升級套到 P1（新建 Fighter 後也要呼叫）：招式鎖定、攻擊力、招式變化 */
-  applyFighter(fighter) {
-    if (!fighter) return
-    fighter.lockedMoves = new Set(this._getSuperKeys(fighter).filter(key => !this.state.slots.includes(key)))
-    fighter.damageRate = 1 + 0.2 * this.state.attack
-    const dodge = fighter.moves.dodge_step?.repeatOnHit
-    if (dodge) {
-      fighter.runBase ??= { dodgeTimes: dodge.times }
-      dodge.times = fighter.runBase.dodgeTimes + this.state.dodgeStep
+  /** 這條線目前幾級 */
+  getLevel(id) {
+    return this.state.levels[id]
+  }
+
+  /** 過關補給：基本值 + 升級（體力線多回血、量條線多補 SG / DG） */
+  getStageReward() {
+    const base = this.getBaseReward()
+    const bars = REGEN_BARS * this.getLevel('regen')
+    return {
+      hpRate: base.hpRate + HEAL_RATE * this.getLevel('vital'),
+      dgBars: base.dgBars + bars,
+      sgBars: base.sgBars + bars,
     }
   }
 
-  /** 還沒解鎖的絕招 key */
-  getLockedSupers() {
-    const fighter = this.getContext()?.fighter
-    return fighter ? this._getSuperKeys(fighter).filter(key => !this.state.slots.includes(key)) : []
+  /** 把 fighter 類的升級套到 P1（新建 Fighter 後也要呼叫）：攻擊力、閃身步次數 */
+  applyFighter(fighter) {
+    if (!fighter) return
+    fighter.damageRate = 1 + ATTACK_RATE * this.getLevel('attack')
+    const dodge = fighter.moves.dodge_step?.repeatOnHit
+    if (dodge) {
+      fighter.runBase ??= { dodgeTimes: dodge.times }
+      dodge.times = fighter.runBase.dodgeTimes + this.getLevel('dodge')
+    }
   }
 
   getMoveName(key) {
@@ -269,28 +223,56 @@ export class Roguelike {
 
   // internal
 
-  /** slots：絕招欄位依序放的招式 key（沒放進欄位的絕招都鎖住） */
   _newState() {
-    return { slots: [...this.startSupers], attack: 0, dodgeStep: 0 }
+    return { levels: Object.fromEntries(LINES.map(line => [line.id, 0])) }
   }
 
-  _getSuperKeys(fighter) {
-    return Object.keys(fighter.moves).filter(key => fighter.moves[key].category === 'super')
+  _isMax(line) {
+    return this.getLevel(line.id) >= (line.max ?? Infinity)
   }
 
-  _render(ctx) {
-    if (this.titleEl) this.titleEl.textContent = `第 ${this.stage} 層突破！選擇 1 張升級`
+  /** 量條類的升級：從升級前的數值（gaugeBase）重新算 */
+  _applyGauge(gauge) {
+    const base = this.gaugeBase
+    const rate = 1 + REGEN_RATE * this.getLevel('regen')
+    gauge.dgRegen = base.dgRegen * rate
+    gauge.sgRegen = base.sgRegen * rate
+    gauge.maxHp = base.maxHp + HP_ADD * this.getLevel('vital')
+  }
+
+  /** 升級樹：每條線一欄，節點由上往下；已升級 is_on、下一級 is_next；整欄都可以點 */
+  _render() {
+    if (this.titleEl) this.titleEl.textContent = `第 ${this.stage} 層突破！選擇 1 項升級`
     this.listEl.innerHTML = ''
-    this.offer.forEach(({ card, payload }, i) => {
+    LINES.forEach((line, i) => {
+      const level = this.getLevel(line.id)
+      const isMax = this._isMax(line)
       const btn = document.createElement('button')
       btn.type = 'button'
-      btn.className = 'index_cards-card'
+      btn.className = 'index_tree-line'
       btn.dataset.index = i
-      btn.innerHTML = '<span class="_head"><span class="_key"></span><span class="_group"></span></span><strong class="_title"></strong><span class="_desc"></span>'
+      btn.disabled = isMax
+      btn.innerHTML = '<span class="_head"><span class="_key"></span><strong class="_title"></strong><span class="_level"></span></span><span class="_nodes"></span><span class="_desc"></span>'
       btn.querySelector('._key').textContent = i + 1
-      btn.querySelector('._group').textContent = GROUPS.find(g => g.id === card.group)?.name || ''
-      btn.querySelector('._title').textContent = card.title(this, payload, ctx)
-      btn.querySelector('._desc').textContent = card.desc?.(this, payload, ctx) || ''
+      btn.querySelector('._title').textContent = line.title(this)
+      btn.querySelector('._level').textContent = `${level} / ${line.max ?? '∞'}`
+      btn.querySelector('._desc').textContent = isMax ? '已達上限' : line.desc(this, level + 1)
+      // 有上限的線顯示全部節點；無上限的線顯示目前附近的 WINDOW 個，最後接 ∞
+      const first = line.max ? 1 : Math.max(1, level - 1)
+      const count = line.max ?? WINDOW
+      const nodes = Array.from({ length: count }, (_, n) => first + n).map(n => {
+        const el = document.createElement('span')
+        el.className = `_node${n <= level ? ' is_on' : ''}${n === level + 1 ? ' is_next' : ''}`
+        el.textContent = `${n}. ${line.node}`
+        return el
+      })
+      if (!line.max) {
+        const more = document.createElement('span')
+        more.className = '_node is_more'
+        more.textContent = '∞'
+        nodes.push(more)
+      }
+      btn.querySelector('._nodes').append(...nodes)
       this.listEl.append(btn)
     })
   }

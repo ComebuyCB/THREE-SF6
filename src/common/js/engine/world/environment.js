@@ -54,6 +54,13 @@ export class Environment {
     // 陰影接收層的材質（依正反面各一個，共用）：只畫影子（其他地方透明），深淺由 setShadowStrength 調；不吃霧（影子只在人物附近）
     this.shadowMaterials = {} // side → ShadowMaterial
     this.shadowStrength = 1
+    // 場景亮度（setLightLevel）：場景模型的材質共用這個 uniform，顏色乘上它（烘焙光影的場景不吃燈光，晚上要靠這個變暗）
+    this.lightUniform = { value: 1 }
+  }
+
+  /** 場景模型的亮度倍率（1 = 原本的顏色）；例如晚上室外調暗，人物不受影響 */
+  setLightLevel(value) {
+    this.lightUniform.value = value
   }
 
   // public
@@ -142,6 +149,27 @@ export class Environment {
     mesh.add(catcher)
   }
 
+  /**
+   * 場景亮度：材質的顏色（霧之前）乘上 lightUniform；接在原本的 onBeforeCompile（例如 Sky.patchMaterial 的霧）後面
+   * 同一個材質只套一次（場景模型有快取，換回來不會再套）
+   */
+  _patchLight(material) {
+    if (!material || material.userData.isLightPatched) return
+    material.userData.isLightPatched = true
+    const prevCompile = material.onBeforeCompile
+    const prevKey = material.customProgramCacheKey
+    material.onBeforeCompile = (shader, renderer) => {
+      prevCompile?.call(material, shader, renderer)
+      shader.uniforms.uEnvLight = this.lightUniform
+      shader.fragmentShader = `uniform float uEnvLight;\n${shader.fragmentShader}`.replace(
+        '#include <opaque_fragment>',
+        '#include <opaque_fragment>\n\tgl_FragColor.rgb *= uEnvLight;',
+      )
+    }
+    material.customProgramCacheKey = () => `${prevKey.call(material)}|envLight`
+    material.needsUpdate = true
+  }
+
   /** 陰影接收層的材質：跟原本網格同一面（場景常用雙面，只畫正面會被剔除） */
   _getShadowMaterial(side) {
     this.shadowMaterials[side] ??= new THREE.ShadowMaterial({ side, opacity: this.shadowCatcher.opacity * this.shadowStrength, depthWrite: false, fog: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })
@@ -187,7 +215,10 @@ export class Environment {
       gltf.scene.traverse(obj => {
         if (!obj.isMesh) return
         obj.receiveShadow = true
-        ;[obj.material].flat().forEach(material => this.onMaterial?.(material))
+        ;[obj.material].flat().forEach(material => {
+          this.onMaterial?.(material)
+          this._patchLight(material)
+        })
         if (this._isUnlit(obj)) unlit.push(obj)
       })
       unlit.forEach(obj => this._addShadowCatcher(obj)) // traverse 結束後才加，避免走訪到新加的

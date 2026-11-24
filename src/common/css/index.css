@@ -5,6 +5,7 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 :root {
   --hud-top: 72px; /* 上方血量 / 動力槽佔用的高度：幀數表、控制台從這裡往下放 */
   --hud-bottom: 56px; /* 下方絕招量條佔用的高度：控制台不蓋到 */
+  --hud-gap: 250px; /* 上方兩條血量中間保留的寬度：連段傷害（除錯）放在這裡，不蓋到血條 */
   --gauge-bg: rgba(0, 0, 0, .6);
   --gauge-bd: rgba(255, 255, 255, .55);
 }
@@ -59,25 +60,26 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 .index_keys-move > .is_space > b { font-size: 13px; }
 .index_keys-pad { display: grid; grid-template-columns: repeat(3, var(--key)); grid-auto-rows: var(--key); gap: var(--gap); }
 .index_keys-pad > .is_wide { grid-column: span 2; }
+.index_keys-pad > .is_drive { grid-column: 3; } /* 6：第二排右邊（4、5 沒有用到） */
 .index_key { --clr: #e8eaef; --top: #3a3e48; --side: #23262d; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; box-sizing: border-box; min-width: 0; padding: 2px; overflow: hidden; background: linear-gradient(var(--top), var(--side)); border: 1px solid rgba(255, 255, 255, .18); border-radius: 6px; box-shadow: 0 3px 0 #111318; color: var(--clr); font-family: inherit; transition: translate .05s, box-shadow .05s, background .05s; }
 .index_key > b { font-size: 16px; line-height: 1; }
 .index_key > small { max-width: 100%; overflow: hidden; font-size: 9px; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; color: rgba(255, 255, 255, .7); }
 .index_key.is_light { --clr: #8fd3ff; }
 .index_key.is_medium { --clr: #ffd23f; }
 .index_key.is_heavy { --clr: #ff6b6b; }
-.index_key.is_super { --clr: #d59bff; }
 .index_key.is_rush { --clr: #66ffcc; }
-.index_key.is_locked { opacity: .35; } /* 還沒解鎖的絕招 */
+.index_key.is_drive { --clr: #ff9a2e; }
 .index_key.is_down { --top: #5a6070; --side: #3a3e48; box-shadow: 0 1px 0 #111318; translate: 0 2px; }
 
 /* 幀數表：顏色仿快打旋風 6 */
-.index_frameMeter { --frame-startup: #3ddc6b; --frame-active: #ff3b4e; --frame-recovery: #3a7bff; --frame-stun: #ffd23f; --frame-block: #ff8c2e; --frame-dash: #9aa3b5; --frame-down: #ffffff; --frame-prejump: #a6defa; --frame-air: #4fb8f0; --frame-grab: #8b5a2b; --frame-empty: rgba(255, 255, 255, .08); position: fixed; bottom: 56px; left: 50%; z-index: 5; box-sizing: border-box; width: min(1200px, calc(100vw - 24px)); padding: 8px 10px; translate: -50% 0; background: rgba(0, 0, 0, .55); border-radius: 4px; font-size: 12px; }
+.index_frameMeter { --frame-startup: #3ddc6b; --frame-active: #ff3b4e; --frame-recovery: #3a7bff; --frame-stun: #ffd23f; --frame-block: #ff8c2e; --frame-dash: #9aa3b5; --frame-down: #ffffff; --frame-prejump: #a6defa; --frame-air: #4fb8f0; --frame-grab: #8b5a2b; --frame-armor: #b45cff; --frame-empty: rgba(255, 255, 255, .08); position: fixed; bottom: 56px; left: 50%; z-index: 5; box-sizing: border-box; width: min(1200px, calc(100vw - 24px)); padding: 8px 10px; translate: -50% 0; background: rgba(0, 0, 0, .55); border-radius: 4px; font-size: 12px; }
 .index_frameMeter-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .index_frameMeter-row > ._label { flex: none; width: 20px; font-weight: 700; }
 .index_frameMeter-cells { display: flex; flex: 1; gap: 1px; min-width: 0; }
 .index_frameMeter-cell { --clr: var(--frame-empty); --bd-clr: var(--clr); flex: 1 1 0; box-sizing: border-box; min-width: 0; height: 14px; background: var(--clr); border: 1px solid var(--bd-clr); }
 .index_frameMeter-ruler { display: flex; flex: 1; min-width: 0; height: 14px; }
-.index_frameMeter-ruler > ._mark { flex: 1 1 0; min-width: 0; padding-left: 1px; border-left: 1px solid rgba(255, 255, 255, .35); font-size: 10px; line-height: 14px; color: rgba(255, 255, 255, .75); font-variant-numeric: tabular-nums; }
+.index_frameMeter-ruler > ._mark { position: relative; flex: 1 1 0; min-width: 0; padding-left: 1px; border-left: 1px solid rgba(255, 255, 255, .35); font-size: 10px; line-height: 14px; color: rgba(255, 255, 255, .75); font-variant-numeric: tabular-nums; }
+.index_frameMeter-ruler > ._mark::after { content: ''; position: absolute; bottom: 0; left: 50%; width: 1px; height: 6px; background: rgba(255, 255, 255, .35); } /* 每 10 格中間的小線 */
 .index_frameMeter-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-top: 6px; }
 .index_frameMeter-foot > ._info { margin: 0; font-variant-numeric: tabular-nums; }
 .index_frameMeter-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0; padding: 0; list-style: none; }
@@ -106,6 +108,8 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 .index_frameMeter-legend > ._item.is_air { --clr: var(--frame-air); }
 .index_frameMeter-cell.is_grab,
 .index_frameMeter-legend > ._item.is_grab { --clr: var(--frame-grab); }
+.index_frameMeter-cell.is_armor,
+.index_frameMeter-legend > ._item.is_armor { --clr: var(--frame-armor); }
 /* 凍結中的前搖：透明底 + 綠色虛線框 */
 .index_frameMeter-cell.is_frozen,
 .index_frameMeter-legend > ._item.is_frozen { --clr: transparent; --bd-clr: var(--frame-startup); }
@@ -117,6 +121,19 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 /* 人物腳底的即時座標：位置由 JS 寫入 transform */
 .index_coord { position: fixed; top: 0; left: 0; z-index: 4; margin: 0; padding: 2px 6px; background: rgba(0, 0, 0, .6); border-radius: 3px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; translate: -50% 8px; }
 .index_coord.is_hide { display: none; }
+
+/* P1 按鍵紀錄：畫面左側、血量下方 */
+.index_inputs { position: fixed; top: 72px; left: 12px; z-index: 4; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; pointer-events: none; }
+.index_inputs > ._row { display: flex; align-items: center; gap: 5px; box-sizing: border-box; min-width: 72px; height: 22px; padding: 0 8px 0 4px; background: rgba(0, 0, 0, .5); border-radius: 4px; opacity: .75; }
+.index_inputs > ._row:first-child { opacity: 1; }
+.index_inputs > ._row > ._arrow { width: 20px; font-size: 17px; font-weight: 900; line-height: 1; text-align: center; }
+.index_inputs > ._row > ._btn { --clr: #fff; min-width: 14px; height: 14px; color: var(--clr); font-size: 13px; font-weight: 900; line-height: 14px; text-align: center; }
+.index_inputs > ._row > ._btn:empty { background: var(--clr); border-radius: 50%; }
+.index_inputs > ._row > ._btn.is_light { --clr: #3ddc6b; }
+.index_inputs > ._row > ._btn.is_medium { --clr: #ff9a2e; }
+.index_inputs > ._row > ._btn.is_heavy { --clr: #ff3b4e; }
+.index_inputs > ._row > ._btn.is_rush { --clr: #66ffcc; }
+.index_inputs > ._row > ._btn.is_drive { --clr: #d59bff; }
 
 /* 連段數：P1 畫面左側、P2 畫面右側 */
 .index_combo { position: fixed; top: 38%; z-index: 5; display: flex; flex-direction: column; line-height: 1; color: #ffd23f; text-shadow: 0 2px 0 #b3361f, 0 0 12px rgba(255, 120, 40, .6); opacity: 0; transition: opacity .3s ease; pointer-events: none; }
@@ -137,7 +154,7 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
  * 血量從外側往中間扣（剩下的血靠中間），虛血（WL）是剩下血量最外側的白色部分
  * 數值由 hud.js 寫入 CSS 變數：--hp、--wl（0 ~ 1，佔血條全長的比例）、每格 --fill（0 ~ 1）
  */
-.index_status { --hp-clr: #ffd23f; --dg-clr: #3ddc6b; position: fixed; top: 12px; left: 12px; z-index: 5; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; width: min(calc(50vw - 24px), 820px); pointer-events: none; }
+.index_status { --hp-clr: #ffd23f; --dg-clr: #3ddc6b; position: fixed; top: 12px; left: 12px; z-index: 5; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; width: min(calc(50vw - 12px - var(--hud-gap) / 2 - 6px), 820px); pointer-events: none; }
 .index_status.is_p2 { left: auto; right: 12px; scale: -1 1; }
 .index_status-hp { --hp: 1; --wl: 0; position: relative; box-sizing: border-box; width: 100%; height: 26px; overflow: hidden; background: var(--gauge-bg); border: 2px solid var(--gauge-bd); border-radius: 3px; }
 .index_status-hp > ._fill { position: absolute; top: 0; right: 0; bottom: 0; width: calc(var(--hp) * 100%); background: linear-gradient(#ffe680, var(--hp-clr)); }
@@ -158,27 +175,44 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 .index_status-dg > ._cell::before { content: ''; position: absolute; inset: 0; background: var(--dg-clr); transform-origin: right; scale: var(--fill) 1; }
 .index_status-dg > ._cell.is_full::before { background: #7dffa0; box-shadow: inset 0 0 4px #fff; }
 
-/* 連段傷害（除錯）：上方兩條血量中間的空白處 */
-.index_comboDebug { position: fixed; top: 12px; left: 50%; z-index: 6; display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 10px; padding: 4px 8px; background: rgba(0, 0, 0, .6); border-radius: 4px; font-size: 11px; line-height: 1.35; translate: -50% 0; pointer-events: none; }
+/* 連段傷害（除錯）：上方兩條血量中間的空白處，寬度固定在 --hud-gap 內（血條兩側各讓出一半） */
+.index_comboDebug { position: fixed; top: 12px; left: 50%; z-index: 6; display: flex; flex-wrap: wrap; justify-content: space-evenly; gap: 2px 8px; box-sizing: border-box; width: var(--hud-gap); overflow: hidden; padding: 4px 6px; background: rgba(0, 0, 0, .6); border-radius: 4px; font-size: 11px; line-height: 1.35; translate: -50% 0; pointer-events: none; }
 .index_comboDebug > ._speed { flex-basis: 100%; margin: 0; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
 .index_comboDebug > ._speed.is_paused { color: #ffd23f; }
 .index_comboDebug > ._col { display: grid; grid-template-columns: auto auto; gap: 0 6px; margin: 0; }
 .index_comboDebug > ._col > dt { opacity: .7; }
 .index_comboDebug > ._col > dd { margin: 0; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 
-/* 升級牌（roguelike.js）：P2 被打倒時蓋在畫面上，選完收起（[hidden]） */
+/* 升級樹（roguelike.js）：P2 被打倒時蓋在畫面上，選完收起（[hidden]）；.index_cards 是全畫面遮罩，結算、主選單也用 */
 .index_cards { position: fixed; inset: 0; z-index: 1003; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 16px; background: rgba(0, 0, 0, .6); }
 .index_cards[hidden] { display: none; }
 .index_cards-title { margin: 0; font-size: 24px; font-style: italic; color: #ffd23f; text-align: center; text-shadow: 0 2px 0 #b3361f; }
-.index_cards-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; }
-.index_cards-card { display: flex; flex-direction: column; gap: 10px; box-sizing: border-box; width: 200px; min-height: 260px; padding: 16px; background: linear-gradient(#2b2f3a, #1a1c22); border: 2px solid rgba(255, 255, 255, .3); border-radius: 12px; color: #fff; font: inherit; text-align: left; cursor: pointer; transition: translate .15s, border-color .15s; }
-.index_cards-card:hover,
-.index_cards-card:focus-visible { border-color: #ffd23f; translate: 0 -6px; }
-.index_cards-card > ._head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.index_cards-card > ._head > ._group { padding: 2px 8px; background: rgba(255, 210, 63, .18); border-radius: 999px; font-size: 12px; color: #ffd23f; }
-.index_cards-card > ._head > ._key { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: rgba(255, 255, 255, .15); border-radius: 50%; font-weight: 700; }
-.index_cards-card > ._title { font-size: 18px; line-height: 1.3; color: #ffd23f; }
-.index_cards-card > ._desc { font-size: 13px; line-height: 1.5; color: rgba(255, 255, 255, .8); }
+.index_cards { overflow: auto; }
+.index_tree { --line: rgba(255, 255, 255, .25); --on: #ffd23f; position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 200px)); gap: 16px; padding-top: 28px; }
+/* 從根往四條線分岔：橫線連到第一欄、最後一欄的中間，每欄往下接一小段（_line::before） */
+.index_tree::before { content: ''; position: absolute; top: 10px; left: calc((100% - 48px) / 8); right: calc((100% - 48px) / 8); height: 2px; background: var(--line); }
+.index_tree-line { position: relative; display: flex; flex-direction: column; gap: 12px; box-sizing: border-box; min-width: 0; padding: 14px; background: linear-gradient(#2b2f3a, #1a1c22); border: 2px solid rgba(255, 255, 255, .3); border-radius: 12px; color: #fff; font: inherit; text-align: left; cursor: pointer; transition: border-color .15s, background .15s; }
+.index_tree-line::before { content: ''; position: absolute; top: -20px; left: 50%; width: 2px; height: 18px; background: var(--line); }
+.index_tree-line:hover,
+.index_tree-line:focus-visible { border-color: var(--on); outline: none; }
+.index_tree-line:disabled { border-color: rgba(255, 255, 255, .15); cursor: not-allowed; opacity: .6; }
+.index_tree-line > ._head { display: flex; align-items: center; gap: 8px; }
+.index_tree-line > ._head > ._key { display: flex; flex: none; align-items: center; justify-content: center; width: 26px; height: 26px; background: rgba(255, 255, 255, .15); border-radius: 50%; font-weight: 700; }
+.index_tree-line > ._head > ._title { flex: 1; min-width: 0; font-size: 17px; line-height: 1.2; color: var(--on); }
+.index_tree-line > ._head > ._level { flex: none; font-size: 12px; color: rgba(255, 255, 255, .7); font-variant-numeric: tabular-nums; }
+.index_tree-line > ._nodes { display: flex; flex-direction: column; gap: 12px; }
+.index_tree-line > ._nodes > ._node { position: relative; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; line-height: 1.2; color: rgba(255, 255, 255, .5); text-align: center; }
+.index_tree-line > ._nodes > ._node + ._node::before { content: ''; position: absolute; bottom: 100%; left: 50%; width: 2px; height: 12px; background: var(--line); }
+.index_tree-line > ._nodes > ._node.is_on { background: rgba(255, 210, 63, .25); border-color: var(--on); color: var(--on); }
+.index_tree-line > ._nodes > ._node.is_on + ._node::before { background: var(--on); }
+.index_tree-line > ._nodes > ._node.is_next { border: 1px dashed var(--on); color: #fff; }
+.index_tree-line > ._nodes > ._node.is_more { border-color: transparent; }
+.index_tree-line > ._desc { margin-top: auto; font-size: 13px; line-height: 1.5; color: rgba(255, 255, 255, .85); }
+@media (max-width: 720px) {
+  .index_tree { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .index_tree::before,
+  .index_tree-line::before { display: none; }
+}
 
 /* 結算（P1 被打倒）：沿用升級牌的全畫面遮罩 */
 .index_over { background: rgba(0, 0, 0, .75); }
@@ -187,6 +221,70 @@ body { overflow: hidden; background: #1b1d22; color: #fff; font-family: system-u
 .index_over-restart { padding: 10px 32px; background: #ffd23f; border: 0; border-radius: 999px; color: #1b1d22; font: 700 18px/1.2 system-ui, sans-serif; cursor: pointer; }
 .index_over-restart:hover,
 .index_over-restart:focus-visible { background: #ffe680; outline: 2px solid #fff; outline-offset: 2px; }
+
+/* 第一人稱的畫面四周染色：中間透明、往四周漸漸變成 --clr；強度由 main.js 寫進 opacity（0 ~ 1） */
+.index_tint { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+.index_tint > ._layer { --clr: transparent; position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 45%, color-mix(in srgb, var(--clr) 35%, transparent) 75%, var(--clr) 120%); opacity: 0; }
+
+/* 主選單（Esc）：沿用升級牌的全畫面遮罩與結算的按鈕樣式，按鈕直排同寬 */
+.index_menu { background: rgba(0, 0, 0, .75); }
+.index_menu-list { display: flex; flex-direction: column; gap: 12px; width: min(100%, 280px); }
+.index_menu-btn { width: 100%; opacity: .6; transition: opacity .1s, scale .1s; }
+/* 選中的按鈕（鍵盤選的、或滑鼠移上去的，main.js _showMenuFocus）：亮起、放大一點；滑鼠移過其他按鈕時不另外亮 */
+.index_menu-btn:hover,
+.index_menu-btn:focus-visible { background: #ffd23f; outline: 0; }
+.index_menu-btn.is_active { opacity: 1; background: #ffe680; outline: 2px solid #fff; outline-offset: 2px; scale: 1.04; }
+.index_menu-hint { margin: 0; font-size: 13px; color: rgba(255, 255, 255, .6); }
+
+/* 招式表（主選單 → 招式表，moveList.js）：左欄普通攻擊 / 連擊 / 動力系統，右欄超必殺 */
+.index_moves { --gold: #ffd23f; --edge: rgba(255, 210, 63, .35); gap: 10px; background: radial-gradient(ellipse at top, rgba(70, 40, 110, .75), rgba(0, 0, 0, .88) 70%); }
+.index_moves-panel { display: flex; flex-direction: column; box-sizing: border-box; width: min(1120px, 100%); min-height: 0; max-height: calc(100vh - 70px); overflow: hidden; background: linear-gradient(160deg, rgba(36, 39, 52, .97), rgba(18, 19, 26, .97)); border: 1px solid var(--edge); border-radius: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, .6), inset 0 1px 0 rgba(255, 255, 255, .08); }
+.index_moves-head { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 14px 20px; background: linear-gradient(90deg, rgba(255, 210, 63, .16), transparent 60%); border-bottom: 1px solid var(--edge); }
+.index_moves-head > ._title { margin: 0; color: var(--gold); font-size: 28px; font-weight: 900; font-style: italic; letter-spacing: .06em; text-shadow: 0 2px 0 #b3361f; }
+.index_moves-head > ._name { margin: 0; font-size: 15px; font-weight: 700; font-style: italic; color: rgba(255, 255, 255, .75); }
+.index_moves-head > ._legend { display: flex; flex: 1; flex-wrap: wrap; justify-content: flex-end; gap: 6px 14px; margin: 0; padding: 0; font-size: 12px; color: rgba(255, 255, 255, .75); list-style: none; }
+.index_moves-head > ._legend > li { display: flex; align-items: center; gap: 5px; }
+.index_moves-head > ._close { padding: 6px 18px; background: transparent; border: 1px solid var(--gold); border-radius: 999px; color: var(--gold); font: 700 14px system-ui, sans-serif; cursor: pointer; }
+.index_moves-head > ._close:hover,
+.index_moves-head > ._close:focus-visible { background: var(--gold); color: #1b1d22; outline: 0; }
+.index_moves-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; min-height: 0; padding: 6px 20px 20px; overflow: auto; scrollbar-color: var(--edge) transparent; scrollbar-width: thin; }
+.index_moves-section { margin-top: 16px; }
+.index_moves-section > ._title { display: flex; align-items: baseline; gap: 10px; margin: 0 0 8px; padding: 5px 14px; background: linear-gradient(90deg, rgba(255, 210, 63, .9), rgba(255, 210, 63, .15)); border-radius: 4px; color: #1b1d22; font-size: 17px; font-weight: 900; font-style: italic; transform: skewX(-10deg); }
+.index_moves-section.is_super > ._title { background: linear-gradient(90deg, #b06bff, rgba(176, 107, 255, .15)); color: #fff; }
+.index_moves-section > ._title > small { font-size: 11px; letter-spacing: .12em; opacity: .7; }
+.index_moves-section > ._list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.index_moves-row { display: flex; align-items: center; gap: 14px; padding: 8px 12px; background: rgba(255, 255, 255, .05); border-left: 3px solid rgba(255, 210, 63, .5); border-radius: 6px; transition: background .15s; }
+.index_moves-row:hover { background: rgba(255, 255, 255, .1); }
+.is_super .index_moves-row { border-left-color: #b06bff; }
+.index_moves-row > ._cmd { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 4px; width: 150px; }
+.index_moves-row > ._info { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.index_moves-row > ._info > ._name { font-size: 16px; }
+.index_moves-row > ._info > ._desc { width: 100%; font-size: 12.5px; line-height: 1.4; color: rgba(255, 255, 255, .7); }
+.index_moves-row > ._info > ._frames { width: 100%; font-size: 12px; color: rgba(255, 255, 255, .55); font-variant-numeric: tabular-nums; }
+.index_moves-row > ._info > ._frames > i { display: inline-block; width: 1px; height: 9px; margin: 0 8px; background: rgba(255, 255, 255, .25); }
+.index_moves-row > ._info > ._tag { --clr: #c9ced8; padding: 1px 7px; background: color-mix(in srgb, var(--clr) 18%, transparent); border: 1px solid color-mix(in srgb, var(--clr) 55%, transparent); border-radius: 999px; color: var(--clr); font-size: 11px; font-style: normal; font-weight: 700; white-space: nowrap; }
+.index_moves-row > ._info > ._tag.is_cost { --clr: #3ddc6b; }
+.index_moves-row > ._info > ._tag.is_armor { --clr: #c98bff; }
+.index_moves-row > ._info > ._tag.is_inv { --clr: #fff; }
+.index_moves-row > ._info > ._tag.is_grab { --clr: #e0a15e; }
+.index_moves-row > ._info > ._tag.is_launch { --clr: #ff7a66; }
+.index_moves ._btn { --clr: #fff; display: inline-flex; flex: none; align-items: center; justify-content: center; box-sizing: border-box; min-width: 26px; height: 26px; padding: 0 4px; background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--clr) 70%, #fff), var(--clr) 60%); border-radius: 13px; box-shadow: 0 2px 0 color-mix(in srgb, var(--clr) 50%, #000); color: #1b1d22; font-size: 13px; font-weight: 900; }
+.index_moves ._btn.is_light { --clr: #3ddc6b; }
+.index_moves ._btn.is_medium { --clr: #ff9a2e; }
+.index_moves ._btn.is_heavy { --clr: #ff5263; }
+.index_moves ._btn.is_rush { --clr: #66ffcc; }
+.index_moves ._btn.is_DI { --clr: #d59bff; }
+.index_moves ._dir { display: inline-flex; flex: none; align-items: center; justify-content: center; box-sizing: border-box; min-width: 26px; height: 26px; padding: 0 5px; background: linear-gradient(#4a4f5e, #2a2d37); border: 1px solid rgba(255, 255, 255, .25); border-radius: 6px; box-shadow: 0 2px 0 #111318; color: #fff; font-size: 14px; font-weight: 900; }
+.index_moves ._sep { color: rgba(255, 255, 255, .5); font-size: 12px; font-weight: 700; }
+.index_moves-cost { display: flex; align-items: center; gap: 10px; padding: 6px 4px 0; font-size: 12px; font-weight: 700; color: #9fe0ff; }
+.index_moves-cost > ._cells { display: flex; gap: 3px; }
+.index_moves-cost > ._cells > i { width: 24px; height: 8px; background: rgba(255, 255, 255, .12); border-radius: 2px; transform: skewX(-15deg); }
+.index_moves-cost > ._cells > i.is_on { background: linear-gradient(#9fe0ff, #4fb8f0); box-shadow: 0 0 6px rgba(79, 184, 240, .8); }
+@media (max-width: 760px) {
+  .index_moves-body { grid-template-columns: minmax(0, 1fr); padding: 4px 14px 14px; }
+  .index_moves-row { gap: 10px; }
+  .index_moves-row > ._cmd { width: 136px; }
+}
 
 /* 絕招量條（SG）：畫面下方，P1 左、P2 右；量條從數字那一側往外長 */
 .index_super { --sg-clr: #4fb8f0; position: fixed; bottom: 12px; z-index: 5; display: flex; align-items: center; gap: 8px; pointer-events: none; }

@@ -39,9 +39,9 @@ export class Combat {
       knockdownSoundFrame: 30, // 被打飛後第幾幀播倒地音效
       // 命中 / 被防禦時的血量與量條變化（點）：普通拳擊中扣 damage[招式] 血（空中重攻擊用 heavy）；SA 每個擊中判定只扣 superDamage 血
       gaugeRules: {
-        damage: { light: 400, medium: 600, heavy: 800 },
+        damage: { light: 400, medium: 600, heavy: 800, DI: 800 },
         // 連段補正：這招打中後，同一連段接下來的傷害再乘上這個倍率（累乘）；SA 吃目前的補正（最低 superMinScaling），但不再往下乘
-        scaling: { light: 0.8, medium: 0.85, heavy: 0.9 },
+        scaling: { light: 0.8, medium: 0.85, heavy: 0.9, DI: 0.8 },
         rushScaling: 0.9, // 衝刺取消：之後的傷害再乘上這個倍率（同一連段才有效，連段斷了下一擊重算）
         minScaling: 0.1, // 補正最低到 10%
         superMinScaling: 0.5, // SA 每一擊的補正最低 50%（只影響 SA 自己，之後的普通招式回到原本的補正）
@@ -54,7 +54,7 @@ export class Combat {
       airHitHangFrames: 10,
       // 跟模式有關的處理（main.js 提供）
       hooks: {
-        onHit: null, // (attacker, target, { move, isLaunch, isBlock, hitstop }) → 鏡頭晃動、命中鏡頭、受擊搖晃
+        onHit: null, // (attacker, target, { move, isLaunch, isBlock, isAbsorb（霸體擋下）, clash, hitstop }) → 鏡頭晃動、命中鏡頭、受擊搖晃
         onCombo: null, // (slot, count)
         onKO: null, // (slot) → 血量 0、死亡動畫播完倒地（見 _checkKO）
         onSuperStart: null, // (fighter, key) → 對手要凍結的幀數（自由模式）；格鬥模式開始演出、回傳 0
@@ -100,6 +100,14 @@ export class Combat {
 
   setFighters(fighters) {
     this.fighters = fighters
+  }
+
+  /** 按下出招鍵（下一幀遊戲邏輯取走）；已經按了還沒取走的絕招 / 動力衝擊不會被優先順序較低的招式蓋掉 */
+  pressAttack(slot, key) {
+    const st = this.input[slot]
+    const fighter = this.fighters[slot]
+    if (fighter && fighter.getPriority(key) < fighter.getPriority(st.pendingAttack)) return
+    st.pendingAttack = key
   }
 
   newInputState() {
@@ -165,10 +173,12 @@ export class Combat {
     const f = this.fighters
     const inputs = {}
     active.forEach(slot => { inputs[slot] = this._getInput(slot, raws[slot] || {}) })
-    // SG 不滿 1 格：SA 鍵無效
-    // 還沒解鎖的招式（lockedMoves，roguelike.js）在按鍵端就擋掉：數字鍵盤絕招欄位只會出已學的招、AI 不挑沒學的；主鍵盤 4 ~ 9（除錯）不受限制
+    // SG 不足（招式的 sgCost）：SA 鍵無效
     active.forEach(slot => {
-      if (f[slot].moves[inputs[slot].attack]?.isSuper && !this.gauges[slot].canSuper) inputs[slot].attack = null
+      const move = f[slot].moves[inputs[slot].attack]
+      if (move?.isSuper && !this.gauges[slot].canSuper(move.sgCost)) inputs[slot].attack = null
+      // 動力衝擊：DG 不夠（dgCost）、人在空中（groundOnly）不能出
+      if (move?.dgCost > this.gauges[slot].dg || (move?.groundOnly && f[slot].isAirborne)) inputs[slot].attack = null
     })
 
     // 衝刺取消：按下的瞬間（或預約後碰到對手時）發光並頓幀，頓幀結束的下一幀才開始衝刺
@@ -217,7 +227,7 @@ export class Combat {
       const st = this.input[slot]
       // 衝刺取消開始（打中後、前 + 0、空中）：扣 rushBars 格 DG（gauge.js）
       if (fighter.startedRush) {
-        this.gauges[slot].useRush()
+        if (this.gauges[slot].useRush()) this.sound?.playSynth('emptyRush') // DG 不夠、改扣白血：低沉的提示音
         this.gauges[slot].pauseDgRegen(this.gauges[slot].rushDgDelay) // 衝刺取消開始起 rushDgDelay 幀不回復 DG
         const stat = this.comboStats[slot]
         stat.scale = Math.max(this.gaugeRules.minScaling, stat.scale * this.gaugeRules.rushScaling) // 衝刺取消補正
@@ -226,6 +236,12 @@ export class Combat {
       if (fighter.usedRush) {
         st.rushLife = 0
         fighter.usedRush = false
+      }
+      // 出招消耗 DG（dgCost）
+      const dgCost = fighter.startedMove && fighter.getCurrentMove()?.dgCost
+      if (dgCost) {
+        this.gauges[slot].addDg(-dgCost)
+        this.gauges[slot].pauseDgRegen(this.gauges[slot].costDgDelay)
       }
       // 收招預約：開始出招就用掉；已經能動卻沒出招（例如在空中）就丟掉
       if (fighter.startedMove || fighter.canAct) st.bufferedAttack = null
@@ -251,7 +267,8 @@ export class Combat {
     this._playStepSounds(active.map(slot => f[slot]))
     // 倒地音效：被打飛後第 knockdownSoundFrame 幀（launch.slow 放慢時跟著往後）
     list.forEach(fighter => {
-      if (fighter.state === 'down' && fighter.stateFrame === Math.round(this.knockdownSoundFrame * fighter.flySlow)) this.sound.play('knockdown')
+      if (fighter.isCrumpling && fighter.stateFrame === fighter.crumple.delay + (fighter.crumple.soundFrame ?? 70)) this.sound.play('knockdown') // 受擊倒地
+      if (fighter.isLaunched && fighter.stateFrame === Math.round(this.knockdownSoundFrame * fighter.flySlow)) this.sound.play('knockdown')
     })
   }
 
@@ -326,7 +343,7 @@ export class Combat {
   /** 原始輸入裡按一下的鍵（AI 的出招、衝刺取消）存進輸入狀態，等真的推進時由 _getInput 取用 */
   _keepRaw(slot, raw) {
     const st = this.input[slot]
-    if (raw?.attack) st.pendingAttack = raw.attack
+    if (raw?.attack) this.pressAttack(slot, raw.attack)
     if (raw?.rush) st.rushLife = this.rushInputFrames
   }
 
@@ -358,12 +375,14 @@ export class Combat {
       fighter.queuedAttack = null
       return pressed || key
     }
-    if (pressed) {
+    // 預約的絕招 / 動力衝擊優先：之後按的優先順序較低的招式不會蓋掉它
+    const isKept = !!pressed && fighter.getPriority(pressed) < fighter.getPriority(st.bufferedAttack?.key)
+    if (pressed && !isKept) {
       const left = fighter.framesUntilFree
       if (left > 1 && left <= this._getBufferFrames(fighter)) st.bufferedAttack = { key: pressed, life: left + 2 } // 多留一點，出招第 1 幀定格時不會提早失效
     }
     // 動作的最後一幀就送出：Fighter 這一幀結束動作後馬上出招，幀數表不會多一格空白；真的開始出招才清
-    if (!pressed && st.bufferedAttack && fighter.framesUntilFree <= 1) return st.bufferedAttack.key
+    if ((!pressed || isKept) && st.bufferedAttack && fighter.framesUntilFree <= 1) return st.bufferedAttack.key
     if (st.bufferedAttack && --st.bufferedAttack.life <= 0) st.bufferedAttack = null
     return pressed
   }
@@ -408,8 +427,9 @@ export class Combat {
   _getSuperStart(f, input) {
     const chainSuper = f.chainKey && f.moves[f.chainKey]?.isSuper && f.connected && f.state === 'attack' && f.framesUntilFree <= 1 ? f.chainKey : null
     const rushSuper = f.isRushReady && f.moves[f.rushAttack]?.isSuper ? f.rushAttack : null
-    const key = chainSuper || (f.moves[input.attack]?.isSuper ? input.attack : null) || rushSuper
     const isSuperCancel = f.state === 'attack' && !f.getCurrentMove()?.isSuper && f.getFrameType() === 'active'
+    const cancelSuper = isSuperCancel && f.moves[f.cancelKey]?.isSuper ? f.cancelKey : null // 前搖時先按的，攻擊判定到了
+    const key = chainSuper || (f.moves[input.attack]?.isSuper ? input.attack : null) || rushSuper || cancelSuper
     if (!key || !(chainSuper || isSuperCancel || f.canAct || f.isRushReady || (f.framesUntilFree <= 1 && !f.isRush))) return null
     // 從自由狀態或動作結尾出的絕招先轉向對手；連打接上、普通拳中斷、衝刺取消不轉身
     const isFromNeutral = !chainSuper && !isSuperCancel && !f.isRushReady && (f.canAct || f.framesUntilFree <= 1)
@@ -419,7 +439,7 @@ export class Combat {
   /** 絕招開始：停在招式第 0 幀、第 1 幀音效；之後交給模式（演出 / 凍結對手） */
   _startSuper(fighter, key) {
     const move = fighter.moves[key]
-    this.gauges[this._getSlot(fighter)].useSuper()
+    this.gauges[this._getSlot(fighter)].useSuper(move.sgCost)
     this.space.run(fighter, () => fighter.startMove(key), false)
     this.playMoveSounds(move, 1, fighter) // 第 1 幀音效：按下絕招的瞬間
     // cutSounds：記住這招，被中斷時停掉它的音效（見 _checkSoundCut）
@@ -522,9 +542,17 @@ export class Combat {
     })
   }
 
-  /** 衝刺取消後出的招式：受擊 / 防禦硬直加 rush.stunBonus 幀（回傳加過的招式數據副本，不改招式表） */
-  _getStunMove(attacker, target) {
-    const move = attacker.getCurrentMove()
+  /**
+   * 這一下用的招式數據（有改的話回傳副本，不改招式表）：
+   * - onTarget：照對手現在的狀態（防禦 block / 出招中 attack / 其他 stand）覆蓋
+   * - 衝刺取消後出的招式：受擊 / 防禦硬直加 rush.stunBonus 幀
+   */
+  _getHitMove(attacker, target) {
+    let move = attacker.getCurrentMove()
+    if (move?.onTarget) {
+      const kind = target.canBlock ? 'block' : target.state === 'attack' ? 'attack' : 'stand'
+      move = { ...move, ...move.onTarget[kind] }
+    }
     const bonus = attacker.isRushAttack ? attacker.rush.stunBonus || 0 : 0
     if (!move || !bonus) return move
     return { ...move, hitStun: move.hitStun + bonus, blockStun: (move.blockStun ?? target.blockStun) + bonus }
@@ -541,7 +569,8 @@ export class Combat {
       if (target.isDying) return // 死亡動畫中無敵（吸附中也打不到）
       if (!(isLocked ? attacker.isHitActive() : attacker.checkHit(target))) return
 
-      const move = this._getStunMove(attacker, target)
+      const move = this._getHitMove(attacker, target)
+      const stopRate = target.getCurrentMove()?.hitstopTaken ?? 1 // 對手出動力衝擊中：頓幀變長（受擊後狀態就變了，先記下來）
       // 打擊特效：命中點、往被打的方向噴
       const hitPoint = attacker.getHitPoint(target)
       const fwd = this.space.forward(attacker)
@@ -561,9 +590,15 @@ export class Combat {
         return
       }
 
+      // 霸體（動力衝擊前搖）：擋下非絕招的攻擊，照常出招
+      if (target.hasArmor && !move.isSuper) {
+        this._absorbHit(attacker, target, move, hitPoint, hitDir, stopRate)
+        return
+      }
+
       const isCombo = target.state === 'hit' || target.isLaunched // 對手還在硬直中（含被打飛的飛走中）被打到 = 連段
       if (!isCombo) this.comboStats[this._getSlot(attacker)] = this._newComboStat() // 新的連段：補正與總傷害重算
-      const isLaunch = attacker.registerHit()
+      const isLaunch = attacker.registerHit(move)
       // 吸附招式（lock）的第 1 下：不管對手在空中、飛走中，一律強制站立受擊，才能吸住打完整招
       const isForceStand = !!move.lock && !isLaunch && !this.lock
       const isAirHit = !isForceStand && target.isAirborne && !isLaunch && !target.isLaunched // 空中被普通攻擊打中：播飛走動畫、距離 = 擊退距離，被打的人在空中停一下
@@ -576,7 +611,7 @@ export class Combat {
       if (!isLaunch) this.space.cornerPush(attacker, target, move) // 對手背貼牆退不了：攻擊方往後退（含飛走中被追打）
       this.sound.play(move.isSuper ? 'superHit' : 'hit') // 受擊確認：受擊硬直第一幀
       // 絕招命中不頓幀，改成晃鏡頭
-      this.hitstop = move.isSuper ? 0 : move.hitstop ?? this.hitstopFrames
+      this.hitstop = move.isSuper ? 0 : Math.round((move.hitstop ?? this.hitstopFrames) * stopRate)
       this.hooks.onHit?.(attacker, target, { move, isLaunch, isBlock: false, hitstop: this.hitstop })
 
       if (move.lock && !isLaunch && !this.lock) {
@@ -607,8 +642,24 @@ export class Combat {
   }
 
   /**
+   * 霸體擋下攻擊：被打的人照常出招，傷害變成虛血、次數 + 1；攻擊方算碰到對手（可以取消），不算打中
+   * 雙方都是有 clash 的招式（動力衝擊對動力衝擊）：頓幀變長、劇烈搖晃（hooks.onHit 的 clash）
+   */
+  _absorbHit(attacker, target, move, hitPoint, hitDir, stopRate) {
+    target.armorHits++
+    attacker.registerHit()
+    const damage = this.gaugeRules.damage[move.damageAs ?? attacker.currentMove] ?? 0
+    this.gauges[this._getSlot(target)].absorbHit(Math.round(damage * (attacker.damageRate ?? 1)))
+    const clash = target.getCurrentMove().clash ? move.clash ?? null : null
+    this.hitEffect.spawn(hitPoint, { type: clash ? 'heavy' : 'block', dir: hitDir })
+    this.sound.play(clash ? 'superHit' : 'block')
+    this.hitstop = Math.round((move.hitstop ?? this.hitstopFrames) * (clash?.hitstopRate ?? stopRate))
+    this.hooks.onHit?.(attacker, target, { move, isLaunch: false, isBlock: true, isAbsorb: true, clash, hitstop: this.hitstop })
+  }
+
+  /**
    * 命中 / 被防禦時的血量與量條變化（gaugeRules）
-   * 普通拳擊中扣 damage[招式] 血（空中重攻擊跟著重攻擊）；DG / SG 照 hit / block 增減
+   * 普通拳擊中扣 damage[招式] 血（招式有 damageAs 就照那一招：空中重攻擊、TC 跟著重攻擊）；DG / SG 照 hit / block 增減
    * 不在 damage 表裡的招式不影響血量與量條；SA 只有擊中時扣 superDamage 血；被擊中一律先結算虛血
    * 擊中的傷害乘上連段補正（comboStats.scale），打完再乘上這招的 scaling
    */
@@ -632,7 +683,7 @@ export class Combat {
       if (move?.isSuper) {
         hitFor(this._getSuperHitDamage(move, attacker), 1, rules.superMinScaling)
       } else {
-        const baseKey = key === 'airHeavy' ? 'heavy' : key
+        const baseKey = move?.damageAs ?? key
         const damage = rules.damage[baseKey]
         if (damage !== undefined) hitFor(damage, rules.scaling[baseKey] ?? 1)
       }

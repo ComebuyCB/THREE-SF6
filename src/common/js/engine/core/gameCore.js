@@ -178,6 +178,10 @@ export class GameCore {
     dirLight.castShadow = true
     // 人物會投影在自己身上，不加 bias 會出現條紋（shadow acne）；貼圖解析度太低時鋸齒也會變成格紋
     dirLight.shadow.mapSize.set(shadowMapSize, shadowMapSize)
+    // bias 是深度比例（0~1），實際偏移 = bias × (far - near)；預設 far 500 會偏 25 公分，影子離開腳跟像浮空
+    // 主光離焦點 sunDistance（10 公尺），far 30 足夠涵蓋場景，偏移縮到約 1.5 公分
+    dirLight.shadow.camera.near = 0.5
+    dirLight.shadow.camera.far = 30
     dirLight.shadow.bias = -0.0005
     dirLight.shadow.normalBias = 0.02
     dirLight.shadow.camera.left = -shadowHalfWidth
@@ -195,6 +199,7 @@ export class GameCore {
       hemi: hemiLight,
       sun: dirLight,
       cloudCover: this.skyOptions.cloudCover,
+      onSceneLight: value => this.environment.setLightLevel(value), // 晚上室外場景變暗
       ...this.atmosphere,
       getEnv: () => this.envModel, // 雨的落點、屋頂下不下雨
       onLights: base => {

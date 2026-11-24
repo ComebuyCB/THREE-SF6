@@ -24,6 +24,12 @@
     <p class="index_loading-text">載入中…<span id="loadingProgress">0%</span></p>
   </div>
 
+  <!-- 第一人稱的畫面四周染色（main.js _updateScreenTint）：衝刺取消 = 綠、受擊 = 紅，跟人物身上的顏色同步淡出 -->
+  <div id="screenTint" class="index_tint" aria-hidden="true">
+    <span class="_layer js-tint-glow"></span>
+    <span class="_layer js-tint-flash"></span>
+  </div>
+
   <section id="frameMeter" class="index_frameMeter" aria-label="幀數表">
     <div class="index_frameMeter-row">
       <span class="_label">F</span>
@@ -38,10 +44,11 @@
       <div id="frameMeterP2" class="index_frameMeter-cells"></div>
     </div>
     <div class="index_frameMeter-foot">
-      <p id="frameMeterInfo" class="_info">出招後開始記錄</p>
+      <p id="frameMeterInfo" class="_info">共 --F　發生 --F　持續 --F　全體 --F　硬直差 --F</p>
       <ul class="index_frameMeter-legend">
         <li class="_item is_startup">前搖</li>
         <li class="_item is_frozen">前搖（演出凍結中）</li>
+        <li class="_item is_armor">霸體</li>
         <li class="_item is_active">攻擊判定</li>
         <li class="_item is_grab">抓技判定</li>
         <li class="_item is_recovery">收招 / 落地</li>
@@ -57,6 +64,9 @@
 
   <p id="coordP1" class="index_coord"></p>
   <p id="coordP2" class="index_coord"></p>
+
+  <!-- P1 按鍵紀錄：方向 + 輕（綠）/ 中（橘）/ 重（紅）、取消（X）、DI，最新的在最上面；由 inputHistory.js 寫入 -->
+  <ol id="inputHistory" class="index_inputs" aria-label="P1 按鍵紀錄"></ol>
 
   <!-- 連段數：P1 畫面左側、P2 畫面右側 -->
   <div id="comboP1" class="index_combo is_p1" aria-live="polite">
@@ -77,7 +87,8 @@
     <!-- DG 另一側：角色名字（hud.js setName）、AI 操作中的紅點（is_ai 時閃爍） -->
     <div class="index_status-row">
       <p class="index_status-info"><span class="_ai" title="AI 操作中"></span><span class="_name js-status-name"></span></p>
-      <div class="index_status-dg js-gauge-dg" role="meter" aria-label="P1 動力槽" aria-valuemin="0" aria-valuemax="30000" aria-valuenow="30000">
+      <div class="index_status-dg js-gauge-dg" role="meter" aria-label="P1 動力槽" aria-valuemin="0" aria-valuemax="36000" aria-valuenow="36000">
+        <span class="_cell"></span>
         <span class="_cell"></span>
         <span class="_cell"></span>
         <span class="_cell"></span>
@@ -94,7 +105,8 @@
     <!-- DG 另一側：角色名字（hud.js setName）、AI 操作中的紅點（is_ai 時閃爍） -->
     <div class="index_status-row">
       <p class="index_status-info"><span class="_ai" title="AI 操作中"></span><span class="_name js-status-name"></span></p>
-      <div class="index_status-dg js-gauge-dg" role="meter" aria-label="P2 動力槽" aria-valuemin="0" aria-valuemax="30000" aria-valuenow="30000">
+      <div class="index_status-dg js-gauge-dg" role="meter" aria-label="P2 動力槽" aria-valuemin="0" aria-valuemax="36000" aria-valuenow="36000">
+        <span class="_cell"></span>
         <span class="_cell"></span>
         <span class="_cell"></span>
         <span class="_cell"></span>
@@ -120,7 +132,9 @@
   <!-- 絕招量條（SG）：畫面下方，P1 左、P2 右；數字 = 已滿的格數 -->
   <section id="superP1" class="index_super is_p1" aria-label="P1 絕招量條">
     <span class="_num js-gauge-sg-num">0</span>
-    <div class="index_super-bar js-gauge-sg" role="meter" aria-label="P1 絕招量條" aria-valuemin="0" aria-valuemax="18000" aria-valuenow="0">
+    <div class="index_super-bar js-gauge-sg" role="meter" aria-label="P1 絕招量條" aria-valuemin="0" aria-valuemax="30000" aria-valuenow="0">
+      <span class="_cell"></span>
+      <span class="_cell"></span>
       <span class="_cell"></span>
       <span class="_cell"></span>
       <span class="_cell"></span>
@@ -128,17 +142,19 @@
   </section>
   <section id="superP2" class="index_super is_p2" aria-label="P2 絕招量條">
     <span class="_num js-gauge-sg-num">0</span>
-    <div class="index_super-bar js-gauge-sg" role="meter" aria-label="P2 絕招量條" aria-valuemin="0" aria-valuemax="18000" aria-valuenow="0">
+    <div class="index_super-bar js-gauge-sg" role="meter" aria-label="P2 絕招量條" aria-valuemin="0" aria-valuemax="30000" aria-valuenow="0">
+      <span class="_cell"></span>
+      <span class="_cell"></span>
       <span class="_cell"></span>
       <span class="_cell"></span>
       <span class="_cell"></span>
     </div>
   </section>
 
-  <!-- 升級牌（roguelike.js）：P2 被打倒時出現，點牌或按 1 / 2 / 3 選；牌由 JS 產生 -->
+  <!-- 升級樹（roguelike.js）：P2 被打倒時出現，點一條線或按 1 ~ 4 選；內容由 JS 產生 -->
   <section id="cardPick" class="index_cards" aria-labelledby="cardPickTitle" hidden>
     <h2 id="cardPickTitle" class="index_cards-title js-cards-title"></h2>
-    <div class="index_cards-list js-cards-list"></div>
+    <div class="index_tree js-cards-list"></div>
   </section>
 
   <!-- P1 被打倒的結算（roguelike.js gameOver）：止步層數 + 評價，按「重新開始」（或 Enter）從第 1 層重來 -->
@@ -146,6 +162,36 @@
     <p class="index_over-stage js-over-stage"></p>
     <h2 id="gameOverRank" class="index_over-rank js-over-rank"></h2>
     <button class="index_over-restart js-over-restart" type="button">重新開始</button>
+  </section>
+
+  <!--
+    主選單（Esc 開關，main.js _setMenuOpen）：開著時遊戲暫停；data-action 對應 main.js _onMenuAction
+    打開時選第一個；W / S（↑ / ↓）上下選、F（Enter）確定；滑鼠移上去時先選它，移開回到鍵盤選的那個（is_active）
+  -->
+  <section id="mainMenu" class="index_cards index_menu" role="dialog" aria-modal="true" aria-labelledby="mainMenuTitle" hidden>
+    <h2 id="mainMenuTitle" class="index_cards-title">主選單</h2>
+    <div class="index_menu-list">
+      <button class="index_over-restart index_menu-btn" type="button" data-action="resume">繼續</button>
+      <button class="index_over-restart index_menu-btn" type="button" data-action="restart">重新開始</button>
+      <button class="index_over-restart index_menu-btn" type="button" data-action="moves">招式表</button>
+      <button class="index_over-restart index_menu-btn" type="button" data-action="fullscreen">切換全螢幕（F11）</button>
+      <button class="index_over-restart index_menu-btn" type="button" data-action="help">操作說明</button>
+    </div>
+    <p class="index_menu-hint">W / S 選擇、F 確定、Esc 回到遊戲</p>
+  </section>
+
+  <!-- 招式表（主選單 → 招式表）：內容由 moveList.js 照人物的招式產生 -->
+  <section id="moveList" class="index_cards index_moves" role="dialog" aria-modal="true" aria-labelledby="moveListTitle" hidden>
+    <div class="index_moves-panel">
+      <header class="index_moves-head">
+        <h2 id="moveListTitle" class="_title">招式表</h2>
+        <p class="_name js-moves-name"></p>
+        <ul class="_legend js-moves-legend"></ul>
+        <button class="_close js-moves-close" type="button" aria-label="返回主選單">返回</button>
+      </header>
+      <div class="index_moves-body js-moves-body"></div>
+    </div>
+    <p class="index_menu-hint">W / S 捲動、F 或 Esc 返回</p>
   </section>
 
   <!-- 互動提示：自由模式靠近可以坐下的物件時，顯示在物件上方（sitSpot.js 寫入 --x / --y 與文字） -->
@@ -174,14 +220,12 @@
               <kbd class="index_key is_d" data-key="KeyD"><b>D</b><small>右</small></kbd>
               <kbd class="index_key is_space" data-key="Space"><b>Space</b><small>跳</small></kbd>
             </div>
-            <!-- 數字鍵盤：7 8 9 拳、4 5 6 絕招欄位（名稱由 main.js _updateKeycaps 寫入，空格變暗）、0 衝刺取消 -->
+            <!-- 數字鍵盤：7 8 9 拳、6 動力衝擊、0 衝刺取消 -->
             <div class="index_keys-pad">
               <kbd class="index_key is_light" data-key="Numpad7"><b>7</b><small>輕</small></kbd>
               <kbd class="index_key is_medium" data-key="Numpad8"><b>8</b><small>中</small></kbd>
               <kbd class="index_key is_heavy" data-key="Numpad9"><b>9</b><small>重</small></kbd>
-              <kbd class="index_key is_super" data-key="Numpad4"><b>4</b><small></small></kbd>
-              <kbd class="index_key is_super" data-key="Numpad5"><b>5</b><small></small></kbd>
-              <kbd class="index_key is_super" data-key="Numpad6"><b>6</b><small></small></kbd>
+              <kbd class="index_key is_drive" data-key="Numpad6"><b>6</b><small>動力衝擊</small></kbd>
               <kbd class="index_key is_rush is_wide" data-key="Numpad0"><b>0</b><small>衝刺取消</small></kbd>
             </div>
           </div>
@@ -192,9 +236,12 @@
           <dl class="index_help-list">
             <dt>移動</dt><dd>A / D 左右走；W 或空白鍵跳</dd>
             <dt>防禦</dt><dd>往後走；後走 + S 原地防禦</dd>
-            <dt>衝刺</dt><dd>AA / DD（空中也可以）</dd>
+            <dt>衝刺</dt><dd>AA / DD（空中也可以；中間按到 S 不算）</dd>
             <dt>衝刺取消</dt><dd>前 + 0；拳打中或被防禦後按 0（空中也可以）；消耗 3 格 DG，不足 3 格照樣能用但 DG 歸 0 並產生虛血</dd>
-            <dt>絕招（SA）</dt><dd>數字鍵盤 4 / 5 / 6（絕招欄位）；消耗 1 格 SG，不滿 1 格不能用；一開始只會閃身步，打倒對手後選牌學新的絕招，依序放進空的欄位</dd>
+            <dt>連擊</dt><dd>重 → 重（打中或被防禦）→ 重（打中），第 3 下擊飛</dd>
+            <dt>動力衝擊</dt><dd>數字鍵盤 6；消耗 1 格 DG（不足不能用）；前搖有霸體，可以擋 2 次非絕招的攻擊（傷害變成虛血）；可以取消攻擊發動</dd>
+            <dt>絕招（SA）</dt><dd>方向指令 + 攻擊鍵，見 Esc → 招式表</dd>
+            <dt>Esc</dt><dd>主選單（遊戲暫停）</dd>
           </dl>
         </section>
 
@@ -203,14 +250,18 @@
           <dl class="index_help-list">
             <dt>移動</dt><dd>WASD 跑（方向以鏡頭為準）；空白鍵跳</dd>
             <dt>快跑</dt><dd>按著左 Shift</dd>
+            <dt>攻擊</dt><dd>滑鼠左鍵輕攻擊、右鍵重攻擊、左右鍵一起按中攻擊（數字鍵盤 7 / 8 / 9 照常可以用）</dd>
             <dt>防禦</dt><dd>被打中時正往遠離對手的方向移動即防禦</dd>
-            <dt>衝刺取消</dt><dd>移動中按 0；拳打中或被防禦後按 0（空中也可以）；消耗 3 格 DG，不足 3 格照樣能用但 DG 歸 0 並產生虛血</dd>
-            <dt>絕招（SA）</dt><dd>消耗 1 格 SG，不滿 1 格不能用</dd>
-            <dt>滑鼠</dt><dd>移動滑鼠轉鏡頭（游標隱藏；Esc 放開，點畫面再鎖定）、滾輪縮放</dd>
+            <dt>衝刺取消</dt><dd>拳打中或被防禦後按左 Shift 或 0（空中也可以）；移動中按 0；消耗 3 格 DG，不足 3 格照樣能用但 DG 歸 0 並產生虛血</dd>
+            <dt>動力衝擊</dt><dd>R（數字鍵盤 6 照常可以用）；消耗 1 格 DG（不足不能用）；前搖有霸體，可以擋 2 次非絕招的攻擊（傷害變成虛血）；可以取消攻擊發動</dd>
+            <dt>絕招（SA）</dt><dd>方向指令 + 攻擊鍵（D = →、A = ←），見 Esc → 招式表；Q 閃身步、E 浪子踢球</dd>
+            <dt>回復</dt><dd>沒有出招、沒被打一段時間後，血量、虛血、DG、SG 慢慢回滿</dd>
+            <dt>Esc</dt><dd>主選單（遊戲暫停、放開滑鼠）</dd>
+            <dt>滑鼠</dt><dd>移動滑鼠轉鏡頭（游標隱藏；點畫面鎖定）、滾輪縮放</dd>
             <dt>Alt</dt><dd>放開滑鼠鎖定（可以點 GUI）；點畫面再鎖定</dd>
-            <dt>滑鼠中鍵</dt><dd>鎖定對手；鎖定中按任何滑鼠鍵回到一般鏡頭</dd>
-            <dt>N</dt><dd>第一人稱：W 前進、S 後退（防禦）、A / D 側走，招式照舊</dd>
-            <dt>C</dt><dd>鏡頭切換跟隨的人</dd>
+            <dt>滑鼠中鍵</dt><dd>鎖定對手；再按一次回到一般鏡頭</dd>
+            <dt>C</dt><dd>第一人稱：W 前進、S 後退（防禦）、A / D 側走（跳躍中也可以），招式照舊</dd>
+            <dt>N</dt><dd>鏡頭切換跟隨的人</dd>
             <dt>F</dt><dd>靠近營火時坐下、靠近櫃子時躲進去（AI 看不到）；再按一次起身 / 出來</dd>
           </dl>
         </section>
@@ -229,19 +280,20 @@
         </header>
         <dl class="index_help-list">
           <dt>P2 出招</dt><dd>按著數字鍵盤 + 再按招式鍵</dd>
-          <dt>Esc</dt><dd><span data-mode="fight">取消出拳 / 招式，雙方回到站立</span><span data-mode="free">取消出拳 / 招式（位置、面向保留）</span></dd>
-          <dt>M</dt><dd><span data-mode="fight">切換到自由模式</span><span data-mode="free">回到格鬥模式</span></dd>
+          <dt>3（主鍵盤）</dt><dd><span data-mode="fight">取消出拳 / 招式，雙方回到站立</span><span data-mode="free">取消出拳 / 招式（位置、面向保留）</span>；HP / DG / SG / 虛血回到初始值</dd>
+          <dt>V</dt><dd><span data-mode="fight">切換到自由模式</span><span data-mode="free">回到格鬥模式</span></dd>
           <dt>0（主鍵盤）</dt><dd>暫停</dd>
           <dt>- / =</dt><dd>遊戲速度</dd>
           <dt>1 / 2（主鍵盤）</dt><dd>P1 / P2 AI 開關（AI 操作中，名字旁紅點閃爍）</dd>
-          <dt>4 ~ 9（主鍵盤）</dt><dd>直接出絕招（不用先學）：4 閃身步、5 浪子踢球、6 風擺柳碎布、7 狗熊哆嗦毛、8 搖頭晃腦、9 猴子繞花線</dd>
+          <dt>4 ~ 9（主鍵盤）</dt><dd>直接出絕招（SG 照樣消耗）：4 閃身步、5 浪子踢球、6 風擺柳碎布、7 狗熊哆嗦毛、8 搖頭晃腦、9 猴子繞花線</dd>
+          <dt>I</dt><dd>收合按鍵紀錄</dd>
           <dt>P</dt><dd>收合幀數表 + 連段傷害</dd>
           <dt>\</dt><dd>控制台所有設定回到預設值</dd>
           <dt>O</dt><dd>除錯顯示（座標、判定框、邊界牆）</dd>
           <dt>X</dt><dd>被擋住時透視角色</dd>
           <dt>B</dt><dd>鏡頭避開物體</dd>
           <dt>H</dt><dd>環繞鏡頭</dd>
-          <dt>滑鼠</dt><dd><span data-mode="fight">左鍵轉動、滾輪縮放鏡頭</span><span data-mode="free">移動轉鏡頭、中鍵鎖定對手、滾輪縮放</span></dd>
+          <dt>滑鼠</dt><dd><span data-mode="fight">左鍵轉動、滾輪縮放鏡頭</span><span data-mode="free">移動轉鏡頭、左 / 右鍵輕 / 重攻擊、左右一起按中攻擊、中鍵鎖定對手、滾輪縮放</span></dd>
         </dl>
       </section>
     </aside>
