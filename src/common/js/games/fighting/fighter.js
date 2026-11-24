@@ -883,6 +883,27 @@ export class Fighter {
     this.xrayMeshes.forEach(mesh => { mesh.visible = isOn })
   }
 
+  /**
+   * 人物要不要被場景的霧蓋住（預設不會）：不是主要視角的人物打開，遠了就跟場景一樣被霧吞掉
+   * patch(material)：霧的算法換成跟場景一樣（例如 Sky.patchMaterial，黑暗霧用到中心點的直線距離）；每個材質只套一次
+   * 切換會讓材質重新編譯，只在狀態改變時呼叫
+   */
+  setFogged(isOn, patch = null) {
+    if (!this.model || this.isFogged === isOn) return
+    this.isFogged = isOn
+    this.model.traverse(obj => {
+      if (!obj.isMesh || obj.userData.isXray) return
+      ;[obj.material].flat().forEach(material => {
+        if (patch && !material.userData.isFogPatched) {
+          patch(material)
+          material.userData.isFogPatched = true
+        }
+        material.fog = isOn
+        material.needsUpdate = true
+      })
+    })
+  }
+
   // internal
 
   _setupModel() {
@@ -1628,6 +1649,27 @@ export class Fighter {
 
   restoreFrame() {
     this.applyInterpolation(1)
+  }
+
+  /**
+   * 邏輯幀之後又移動了人物（例如推擠、推出牆、地面高度）：補間記錄的位置跟著平移
+   * 不然渲染後 restoreFrame 會把人放回記錄的位置，等於這次移動沒有發生
+   */
+  syncCapturedPosition() {
+    const it = this.interp
+    if (!it) return
+    const o = it.bones.length * 7
+    const pos = this.model.position
+    const dx = pos.x - it.curr[o]
+    const dy = pos.y - it.curr[o + 1]
+    const dz = pos.z - it.curr[o + 2]
+    if (!dx && !dy && !dz) return
+    it.curr[o] += dx
+    it.curr[o + 1] += dy
+    it.curr[o + 2] += dz
+    it.prev[o] += dx
+    it.prev[o + 1] += dy
+    it.prev[o + 2] += dz
   }
 
   /** 同一個 clip 的另一個 AnimationAction（兩個輪流用），root motion 資料一起帶過去 */

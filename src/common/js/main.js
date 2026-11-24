@@ -1,27 +1,31 @@
 import * as THREE from 'three'
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import GUI from 'three/addons/libs/lil-gui.module.min.js'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
-import { Fighter, FPS } from './fighter.js'
-import { FrameMeter } from './frameMeter.js'
-import { MixamoLoader } from './mixamoLoader.js'
-import { Stage } from './stage.js'
-import { Hud } from './hud.js'
-import { Popup } from './popup.js'
-import { Sound } from './sound.js'
-import { HitEffect } from './hitEffect.js'
-import { FootMarker } from './footMarker.js'
-import { FreeMode } from './freeMode.js'
-import { SkyDome } from './skyDome.js'
-import { Combat, LineSpace } from './combat.js'
-import { addSmileMorph } from './faceMorph.js'
-import { FighterAI, AI_LEVELS } from './ai.js'
-import { Roguelike } from './roguelike.js'
-import { SitSpot } from './sitSpot.js'
-import { Fisheye } from './fisheye.js'
+import { Fighter, FPS } from './games/fighting/fighter.js'
+import { FrameMeter } from './games/fighting/frameMeter.js'
+import { MixamoLoader } from './engine/assets/mixamoLoader.js'
+import { Stage } from './games/fighting/stage.js'
+import { Hud } from './games/fighting/hud.js'
+import { Popup } from './engine/ui/popup.js'
+import { Sound } from './engine/audio/sound.js'
+import { HitEffect } from './engine/fx/hitEffect.js'
+import { FootMarker } from './games/fighting/footMarker.js'
+import { FreeMode } from './games/fighting/freeMode.js'
+import { Combat, LineSpace } from './games/fighting/combat.js'
+import { addSmileMorph } from './engine/character/faceMorph.js'
+import { FighterAI, AI_LEVELS } from './games/fighting/ai.js'
+import { Roguelike } from './games/fighting/roguelike.js'
+import { WEATHERS } from './engine/world/atmosphere.js'
+import { GameCore } from './engine/core/gameCore.js'
+import { OrbitCamera } from './engine/camera/orbitCamera.js'
+import { PointerLook } from './engine/input/pointerLook.js'
+import { brightenScene, getHipsPin, makeInPlace, speedUpClip, trimClip } from './engine/assets/clipTools.js'
 
 const MODEL_DIR = 'src/model'
+// 聲音依用途分資料夾：fight/hit 打擊、fight/superArt 絕招；weather 天氣、ambient 環境（之後加）
 const SOUND_DIR = 'src/sound'
+const FIGHT_HIT_SOUND_DIR = `${SOUND_DIR}/fight/hit`
+const FIGHT_SUPER_SOUND_DIR = `${SOUND_DIR}/fight/superArt`
+const AMBIENT_SOUND_DIR = `${SOUND_DIR}/ambient`
 const SUPER_ARTS = ['dog_bear', 'kick_ball', 'monkey_turn', 'shake_head', 'dodge_step', 'wind_step']
 
 /**
@@ -29,28 +33,10 @@ const SUPER_ARTS = ['dog_bear', 'kick_ball', 'monkey_turn', 'shake_head', 'dodge
  * 流程：建立場景 → 載入人物 FBX 與共用動作 FBX，在程式裡綁定（見 mixamoLoader.js）
  *       → 建立 P1 / P2 Fighter → 固定 60fps 推進遊戲邏輯（_step）：
  *         輸入 → 人物更新 → 吸附 → 推擠 → 面向 → 命中判定 → 連段 → 幀數表
- *       → 畫面更新（_animate）：絕招演出、鏡頭、HUD 與渲染，跟螢幕更新率走
+ *       → 畫面更新（GameCore 的遊戲迴圈呼叫 _update / _beforeRender / _afterRender）：絕招演出、鏡頭、HUD 與渲染，跟螢幕更新率走
  * 絕招演出：鏡頭拉近 + 停留期間只有放招的人推進招式（幀數表記成凍結中的前搖），其他一切暫停；鏡頭拉回時遊戲已經繼續
  * P2 用方向鍵操作（← → 移動 / 防禦、↑ 跳、↓ + 後原地防禦），按著 Shift 再按 P1 的數字鍵 = P2 出招；GUI 勾選「AI 操作」時改由 ai.js 操作
  */
-// 場景模型的霧（取代 three.js 的 fog_fragment）：霧色 = 看出去方向的天空貼圖顏色，和一般霧色依 uSkyMix 混合
-// textureLod 0：equirect 的左右接縫在 mipmap 計算會出現細線，固定用最清楚的那層
-const SKY_FOG_PARS = `
-uniform sampler2D uSkyMap;
-uniform float uSkyMix;
-uniform mat3 uSkyMat;
-uniform float uSkyIntensity;
-varying vec3 vSkyFogPos;
-`
-const SKY_FOG_FRAGMENT = `
-#ifdef USE_FOG
-	float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
-	vec3 skyDir = uSkyMat * normalize( vSkyFogPos - cameraPosition );
-	vec3 skyFog = linearToOutputTexel( vec4( textureLod( uSkyMap, equirectUv( skyDir ), 0.0 ).rgb * uSkyIntensity, 1.0 ) ).rgb;
-	gl_FragColor.rgb = mix( gl_FragColor.rgb, mix( skyFog, fogColor, uSkyMix ), fogFactor );
-#endif
-`
-
 class FighterViewer {
   constructor(options) {
     const def = {
@@ -89,6 +75,7 @@ class FighterViewer {
         // 自由模式坐下（freeMode.js sitAnims）：坐下 = standUp 倒著播 → sitIdle 循環；起身 = standUp 正著播
         standUp: `${MODEL_DIR}/anims/normal/StandingUp.fbx`,
         sitIdle: `${MODEL_DIR}/anims/normal/SittingIdle.fbx`,
+        hideIdle: `${MODEL_DIR}/anims/normal/StandardIdle.fbx`, // 躲在櫃子裡站著（freeMode.js hide.idleAnim）
         ...Object.fromEntries(SUPER_ARTS.map(name => [name, `${MODEL_DIR}/anims/superArt/${name}.fbx`])),
       },
       // 有 root motion 的動作：保留臀部前後位移曲線，由程式轉成人物座標（其餘動作完全原地播放）
@@ -130,6 +117,7 @@ class FighterViewer {
       //   model 是 null = 沒有場景：只有影子地板與天空（自由模式限制在 ±halfWidth 的方框內）
       //   props = 放在場景裡的物件（世界座標，不跟 transform 移動）：
       //     { type: 'sit', url, position: [x, y, z], rotation（度）, scale, radius } 可以坐下的物件（sitSpot.js；自由模式靠近按 F）
+      //     { type: 'hide', url, position, facing（門朝的方向，度）, height } 可以躲進去的物件（hideSpot.js；實心，F 躲藏 / 離開）
       scenes: {
         無: { model: null, halfWidth: 5 },
         庭院: { model: `${MODEL_DIR}/background/courtyard.glb`, ground: [0.0252, -0.0414, 0.6321], transform: { x: -0.3, y: -0.03, z: 4, rotation: 0, scale: 0.9 } },
@@ -138,13 +126,19 @@ class FighterViewer {
           model: `${MODEL_DIR}/background/bayard_station_valve_house.glb`, ground: [0.0013, -0.0167, 9.416], transform: { x: 1.5, y: -0.05, z: -8.1, rotation: 0, scale: 0.9 },
           props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, position: [-4.5, 0, -2.5] }],
         },
-        // 人物站在拱橋正下方、橫跨道路：左右 ±5 公尺都是平地，最近的牆在 7.5 公尺外，頭頂整段都有橋
-        橋下: { model: `${MODEL_DIR}/background/rick_roll_bridge.glb`, ground: [0.0049, 0.0115, -4.9441], transform: { x: 1.5, y: -0.03, z: -8.5, rotation: 0, scale: 1 }, halfWidth: 5 },
         // 室內（天花板約 2.8 公尺）：模型裡 (-28, -1) 那塊大廳移到場地中心，打鬥線到鏡頭之間左右 7.5 公尺內沒有牆，背後牆約 3 公尺
         後室: {
           model: `${MODEL_DIR}/background/backrooms_vr.glb`, ground: [0, 0, -0.12], transform: { x: 28, y: 0, z: 1, rotation: 0, scale: 1 },
-          props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, position: [28, 0, 2] }],
+          props: [
+            { type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, position: [28, 0, 2] },
+            // 櫃子靠在打鬥場地後面的牆邊（牆約在 z = -3.3），門朝鏡頭（+z）
+            { type: 'hide', url: `${MODEL_DIR}/items/locker_rough_texture.glb`, position: [3, 0, -2.9], facing: 0 },
+          ],
         },
+        // 後室 2：另一張後室地圖（條紋 / 點點壁紙、地毯）；模型原點那塊就是空地：左右 8.8 公尺、前 13 公尺、背後牆 3.6 公尺
+        後室2: { model: `${MODEL_DIR}/background/backrooms_vr2.glb`, ground: [0, 0, 0.01], transform: { x: 0, y: 0, z: 0, rotation: 0, scale: 1 } },
+        // PSX 後室：PS1 風格的低面數後室；模型裡 (6, -22) 那塊移到場地中心：左右 9 公尺、前 16 公尺、背後牆 6 公尺，打鬥線到鏡頭之間沒有牆
+        PSX後室: { model: `${MODEL_DIR}/background/psx_-_backroom.glb`, ground: [0, 0, -0.34], transform: { x: -6, y: 0, z: 22, rotation: 0, scale: 1 } },
       },
       // 天空（GUI 可切換）：procedural = 程式畫的動態天空（skyDome.js）；其餘是 2:1 全景圖，當作無限遠的背景，3D 場景沒擋住的地方看得到
       skies: {
@@ -179,18 +173,25 @@ class FighterViewer {
       fightReturn: { arcHeight: 1.2 },
       // 音效：一般招式命中 hit、絕招命中 superHit、防禦住 block、倒地 knockdown；其他 key 給招式的 sounds 用；{ url, volume } 可個別調音量
       sounds: {
-        hit: { url: `${SOUND_DIR}/hit2.mp3`, volume: 0.8 },
-        superHit: { url: `${SOUND_DIR}/hit2.mp3`, volume: 0.8 },
-        block: `${SOUND_DIR}/hit1.mp3`,
-        knockdown: `${SOUND_DIR}/knockdown.wav`,
-        dog_bear: `${SOUND_DIR}/dog_bear.wav`,
-        dog_bear_title: `${SOUND_DIR}/dog_bear_title.wav`,
-        kick_ball_title: `${SOUND_DIR}/kick_ball_title.wav`,
-        shake_head: `${SOUND_DIR}/shake_head.wav`,
-        shake_head_title: `${SOUND_DIR}/shake_head_title.wav`,
-        dodge_step_title: `${SOUND_DIR}/dodge_step_title.wav`,
-        wind_step_title: { url: `${SOUND_DIR}/wind_step_title.wav`, volume: 0.8 },
+        // 格鬥：打擊、防禦、倒地（src/sound/fight/hit）
+        hit: { url: `${FIGHT_HIT_SOUND_DIR}/hit2.mp3`, volume: 0.8 },
+        superHit: { url: `${FIGHT_HIT_SOUND_DIR}/hit2.mp3`, volume: 0.8 },
+        block: `${FIGHT_HIT_SOUND_DIR}/hit1.mp3`,
+        knockdown: `${FIGHT_HIT_SOUND_DIR}/knockdown.wav`,
+        // 格鬥：絕招的語音、音效（src/sound/fight/superArt）
+        dog_bear: `${FIGHT_SUPER_SOUND_DIR}/dog_bear.wav`,
+        dog_bear_title: `${FIGHT_SUPER_SOUND_DIR}/dog_bear_title.wav`,
+        kick_ball_title: `${FIGHT_SUPER_SOUND_DIR}/kick_ball_title.wav`,
+        shake_head: `${FIGHT_SUPER_SOUND_DIR}/shake_head.wav`,
+        shake_head_title: `${FIGHT_SUPER_SOUND_DIR}/shake_head_title.wav`,
+        dodge_step_title: `${FIGHT_SUPER_SOUND_DIR}/dodge_step_title.wav`,
+        wind_step_title: { url: `${FIGHT_SUPER_SOUND_DIR}/wind_step_title.wav`, volume: 0.8 },
+        // 環境（src/sound/ambient）：循環播放，音量跟著天氣（見 _updateWeatherSound）
+        raining: `${AMBIENT_SOUND_DIR}/raining.wav`,
+        // 天氣（src/sound/weather）：之後加
       },
+      // 天氣聲：音量變化的平滑秒數（雨量本身也會依天氣過渡慢慢變，兩個疊起來）
+      weatherSoundFade: 1,
       knockdownSoundFrame: 35, // 被打飛後第幾幀播倒地音效（身體碰到地面的時間點）
       // 絕招演出（遊戲幀）：鏡頭拉近 → 停留 → 拉回（遊戲繼續）
       // 拉近 + 停留期間其他一切凍結，放招的人從招式的 animStart 開始播（招式幀數推進、但不做命中判定）
@@ -261,7 +262,6 @@ class FighterViewer {
     this.helpDockEl = document.querySelector('#helpDock')
 
     // 4. setup runtime state
-    this.clock = new THREE.Clock()
     this.mixamo = new MixamoLoader()
     this.sourceCache = {} // url → Promise<{ scene, clips }>，同一個人物只綁定一次
     this.p1 = null
@@ -282,41 +282,19 @@ class FighterViewer {
     }
     this.pendingDash = { p1: 0, p2: 0 } // 格鬥模式連按兩下方向鍵：衝刺方向（世界座標），下一幀遊戲邏輯取走
     this.lastTap = { p1: { code: '', time: 0 }, p2: { code: '', time: 0 } } // 上一次按下的方向鍵，判斷連按用
-    this.skyCache = {} // 天空名稱 → texture
-    this.envModel = null // 目前的 3D 場景模型（Group）
     this.stageMaxHalfWidth = this.stageHalfWidth // GUI 設定的場地半寬；實際邊界 stageHalfWidth 可能被場景的牆縮小
     this.defaultHalfWidth = this.stageHalfWidth // 場景沒填 halfWidth 時用的半寬
-    this.wallRaycaster = new THREE.Raycaster()
-    this.envCache = {} // 場景名稱 → Promise<Group>，同一個場景模型只載入一次
-    this.props = [] // 目前場景裡的物件（場景設定的 props，例如可以坐下的營火 SitSpot）
-    this.sitSpot = null // P1 正坐在哪個物件旁
+    this.activeProp = null // P1 正在用的物件（坐著的營火、躲著的櫃子）
     this.cameraPull = 0 // 跳躍時鏡頭額外往後拉的距離
-    // 鎖定鏡頭（絕招演出、命中鏡頭、環繞鏡頭）時滑鼠左鍵拖曳：yaw / pitch 疊在演出鏡頭上（弧度）
-    //   只影響畫面（渲染後還原），演出結束、放開滑鼠後才把角度併進一般鏡頭
-    // 鏡頭避開物體（B）：dist = 目前畫面用的鏡頭距離（平滑變化）；只影響畫面（渲染後還原），OrbitControls 的距離不變
-    this.camCollide = { dist: Infinity, isApplied: false, pos: new THREE.Vector3(), raycaster: new THREE.Raycaster() }
-    this.camCollide.raycaster.firstHitOnly = true
-    this.camDrag = { isDragging: false, x: 0, y: 0, yaw: 0, pitch: 0, isApplied: false, pos: new THREE.Vector3(), quat: new THREE.Quaternion() }
     this.returning = null // 自由 → 格鬥模式的過渡中：{ time, duration, items: [{ fighter, from, to, fromRot, toRot }], camFrom, camTo }
-    this.orbitCam = null // 環繞鏡頭中：{ time, target, offset }（target、offset = 開始時的一般鏡頭）
     this.hitCam = null // 命中鏡頭中：{ attacker, move, phase: 'in' / 'out', time, fromPos, fromTarget, base: { target, offset } }
     this.shake = null // 受擊搖晃中：{ fighter, time, duration }（秒）
-    this.camShake = null // 鏡頭晃動中：{ amp, time, duration, phase }（秒）
-    this.camShakeOffset = new THREE.Vector3() // 這個畫面加在鏡頭上的晃動位移（渲染後扣回去）
     this.accumulator = 0 // 尚未消化的時間，累積滿 1/60 秒就推進 1 幀
     this.superDim = 0 // 絕招演出的變暗程度（0 = 正常、1 = 暗到 dimLevel）
-    this.fog = null // 場地霧（THREE.Fog）：平常是地平線霧，絕招演出時漸變成演出的霧（人物不受影響）
-    this.superFogAmount = 0 // 絕招演出的霧濃度 0 ~ 1
-    this.skyDome = null // 動態天空
-    this.horizonColor = new THREE.Color(0xc8d5e2) // 地平線霧的顏色（跟著天空）
-    // 全景圖天空的霧：場景模型的霧色改成「它正後方那一點的天空貼圖顏色」，遠處的模型直接融進天空（見 _patchSkyFog）
-    //   uSkyMix：0 = 用天空貼圖、1 = 用一般霧色（動態天空、絕招演出的霧）
-    this.skyFogUniforms = {
-      uSkyMap: { value: null },
-      uSkyMix: { value: 1 },
-      uSkyMat: { value: new THREE.Matrix3() },
-      uSkyIntensity: { value: 1 },
-    }
+    this.superFogAmount = 0 // 絕招演出的霧濃度 0 ~ 1（場地的霧：平常是地平線霧，演出時漸變成演出的霧，人物不受影響）
+    // 以下在 _setupScene 建立（engine/）：
+    //   sky 天空與霧、environment 場景模型與物件、cameraShaker 晃鏡頭、cameraCollision 鏡頭避開物體、
+    //   cameraDrag 鎖定鏡頭時拖曳、orbiter 環繞鏡頭（H）、pointerLook 自由模式的滑鼠視角
     this.cinematic = null // 絕招演出中：{ fighter, time, frozenSteps, animStart, fromTarget, fromOffset, zoomPos, zoomTarget }
     this.combat = null // 共用的戰鬥流程（combat.js）：輸入預約、頓幀、吸附、連段等狀態都在裡面
     this.lineSpace = null // 格鬥模式的空間規則
@@ -347,6 +325,13 @@ class FighterViewer {
       horizonFog: true,
       fogNear: 15,
       fogFar: 70,
+      // 黑暗霧（取代地平線霧）：以中心點為圓心，開始 ~ 全暗（公尺）之間漸暗；天空變暗 0 ~ 1；人物不受影響
+      darkFog: false,
+      darkFogCenter: '鏡頭', // 鏡頭 / 人物（自由模式 = 鏡頭跟隨的人，格鬥模式 = P1）
+      darkFogNear: 4,
+      darkFogFar: 14,
+      darkFogSky: 1,
+      darkFogColor: '#000000',
       // 目前 3D 場景的擺放（切換場景時換成該場景的 transform）：水平轉動（度）、位移（公尺；y 負數 = 往下）、大小倍率
       envRotation: 0,
       envOffsetX: 0,
@@ -374,7 +359,7 @@ class FighterViewer {
     this._setupScene()
     this._setupGui()
     this.bindEvents()
-    this._animate()
+    this.core.start()
 
     try {
       await this.setCharacter('p1', this.params.p1)
@@ -386,55 +371,18 @@ class FighterViewer {
   }
 
   bindEvents() {
-    window.addEventListener('resize', () => this._resize())
     // 操作說明 (?)、除錯 (bug)：一次只開一個
     const closeOthers = (popup, isOpen) => {
       if (isOpen) this.popups.forEach(other => other !== popup && other.isOpen && other.toggle(false))
     }
     this.popups = ['#help', '#debugHelp'].filter(el => document.querySelector(el)).map(el => new Popup({ el, onToggle: closeOthers }))
 
-    // 鎖定鏡頭時滑鼠左鍵拖曳轉鏡頭（一般時由 OrbitControls 處理）
-    const canvas = this.renderer.domElement
-    canvas.addEventListener('pointerdown', e => {
-      if (e.button !== 0 || !this._isCameraLocked()) return
-      Object.assign(this.camDrag, { isDragging: true, x: e.clientX, y: e.clientY })
-      canvas.setPointerCapture(e.pointerId)
-    })
-    canvas.addEventListener('pointermove', e => {
-      const d = this.camDrag
-      if (!d.isDragging) return
-      // 轉動速度同 OrbitControls：拖曳畫面高度 = 轉一圈
-      const rate = (Math.PI * 2) / canvas.clientHeight
-      d.yaw -= (e.clientX - d.x) * rate
-      d.pitch -= (e.clientY - d.y) * rate
-      d.x = e.clientX
-      d.y = e.clientY
-    })
-    const endDrag = () => { this.camDrag.isDragging = false }
-    canvas.addEventListener('pointerup', endDrag)
-    canvas.addEventListener('pointercancel', endDrag)
-
-    // 自由模式：滑鼠鎖定（游標隱藏），移動滑鼠 = 轉鏡頭；沒鎖定時（例如按 Esc 放開）點畫面重新鎖定
-    // 滑鼠中鍵 = 鎖定對手（再按一次解除）；鎖定對手中按任何滑鼠鍵 = 回到一般鏡頭
-    // 自由模式不讓 OrbitControls 收到按下（它會 setPointerCapture，滑鼠鎖定中會出錯）；滾輪縮放是另一個事件，照常
-    canvas.addEventListener('pointerdown', e => {
-      if (this.freeMode.isActive) e.stopImmediatePropagation()
-    }, { capture: true })
-    canvas.addEventListener('mousedown', e => {
-      if (!this.freeMode.isActive || this.returning) return
-      if (e.button === 1) e.preventDefault() // 中鍵不要觸發瀏覽器的自動捲動
-      if (document.pointerLockElement !== canvas) {
-        this._lockPointer()
-        return
-      }
-      if (e.button === 1) this.freeMode.toggleLockOn()
-      else this.freeMode.setLockOn(false)
-    })
-    document.addEventListener('mousemove', e => {
-      if (this.freeMode.isActive && document.pointerLockElement === canvas) this.freeMode.addLook(e.movementX, e.movementY)
-    })
-
     window.addEventListener('keydown', e => {
+      // Alt：放開滑鼠鎖定（自由模式），游標出現可以點 GUI；點畫面再鎖定
+      if (e.code === 'AltLeft' || e.code === 'AltRight') {
+        e.preventDefault()
+        this.pointerLook.unlock()
+      }
       // 選升級牌中：1 / 2 / 3（主鍵盤或數字鍵盤）選牌；結算視窗：Enter 重新開始（按鈕有焦點時空白鍵也可以）；其他遊戲按鍵都不理
       if (this.roguelike.isChoosing) {
         const index = ['1', '2', '3'].indexOf(e.code.replace(/^(Digit|Numpad)/, ''))
@@ -481,6 +429,7 @@ class FighterViewer {
         if (!e.repeat && e.code === 'Digit2') this._toggleAI('p2')
         if (!e.repeat && e.code === 'KeyC') this.freeMode.switchFollow()
         if (!e.repeat && e.code === 'KeyN' && !this.returning) this.freeMode.toggleFirstPerson()
+        if (!e.repeat && e.code === 'Backslash') this._resetGui()
         if (!e.repeat && e.code === 'KeyB') this._setCameraCollision(!this.params.cameraCollision)
         if (!e.repeat && e.code === 'KeyH') this.startOrbitCamera()
         if (!e.repeat && e.code === 'KeyM' && !this.returning) this.toggleFreeMode()
@@ -496,6 +445,7 @@ class FighterViewer {
     })
 
     window.addEventListener('keyup', e => {
+      if (e.code === 'AltLeft' || e.code === 'AltRight') e.preventDefault() // 不要讓瀏覽器把焦點移到選單列
       this.keys.delete(e.code)
       this._updateKeycaps()
     })
@@ -645,7 +595,7 @@ class FighterViewer {
 
     if (this.freeMode.isActive) this.toggleFreeMode(true) // 換人物：先離開自由模式（不播過渡）
     this._endHitCamera() // 換人物：命中鏡頭直接回到一般鏡頭
-    this._endOrbitCamera()
+    this.orbiter.end()
     prev?.dispose()
     this.combat.reset()
     this.combat.resetGauges() // 換人物：血量與量條回到初始值
@@ -684,85 +634,28 @@ class FighterViewer {
     this.combat.input[slot] = this.combat.newInputState()
   }
 
-  /** 切換天空：全景圖當作無限遠的背景，載入過的會快取 */
+  /** 切換天空（skies 的名稱；見 engine/world/sky.js） */
   setSky(name) {
-    const url = this.skies[name]
-    if (!url) return
+    if (!this.skies[name]) return
     this.params.sky = name
-    if (url === 'procedural') {
-      this._applySky(null)
-      return
-    }
-    if (this.skyCache[name]) {
-      this._applySky(this.skyCache[name])
-      return
-    }
-    new THREE.TextureLoader().load(url, texture => {
-      texture.mapping = THREE.EquirectangularReflectionMapping
-      texture.colorSpace = THREE.SRGBColorSpace
-      this.skyCache[name] = texture
-      // 載入期間又切到別張時不覆蓋
-      if (this.params.sky === name) this._applySky(texture)
-    })
+    this.sky.setSky(name)
+    this.atmosphere?.apply() // 全景圖也跟著晝夜變暗
   }
 
-  /** 套用天空：texture = null 時用動態天空；霧色換成這片天空的地平線色 */
-  _applySky(texture) {
-    this.skyDome.setVisible(!texture)
-    this.scene.background = texture || this.skyDome.getHorizonColor()
-    this.horizonColor.copy(texture ? this._sampleHorizonColor(texture) : this.skyDome.getHorizonColor())
-    this._applySkyRotation()
-    this._applyStageLight()
-    this._applySuperFog(this.superFogAmount)
+  /** 目前的 3D 場景模型（Group；沒有 = null） */
+  get envModel() {
+    return this.environment?.model ?? null
+  }
+
+  /** 目前場景裡的物件（場景設定的 props，例如可以坐下的營火 SitSpot） */
+  get props() {
+    return this.environment?.props ?? []
   }
 
   /**
-   * 場景模型的材質：霧色改成看出去那個方向的天空貼圖顏色（同背景的轉動），遠處的模型和背景天空接得起來
-   * three.js 的霧在轉成輸出色彩之後才套用，取樣的天空顏色也先轉成輸出色彩
+   * 切換 3D 場景（scenes 的名稱；載入見 engine/world/environment.js）
+   * 擺放套用場景的 transform（GUI 可再調）、打鬥場地半寬換成場景的 halfWidth；模型換好後由 _onSceneModel 調整場地
    */
-  _patchSkyFog(material) {
-    material.customProgramCacheKey = () => 'skyFog'
-    material.onBeforeCompile = shader => {
-      Object.assign(shader.uniforms, this.skyFogUniforms)
-      shader.vertexShader = `varying vec3 vSkyFogPos;\n${shader.vertexShader}`.replace(
-        '#include <project_vertex>',
-        '#include <project_vertex>\n\tvSkyFogPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;',
-      )
-      shader.fragmentShader = `${SKY_FOG_PARS}\n${shader.fragmentShader}`.replace('#include <fog_fragment>', SKY_FOG_FRAGMENT)
-    }
-    material.needsUpdate = true
-  }
-
-  /** 天空貼圖霧的設定：貼圖、轉動、亮度、和一般霧色的混合 */
-  _updateSkyFog() {
-    const u = this.skyFogUniforms
-    const texture = this.scene.background?.isTexture ? this.scene.background : null
-    u.uSkyMap.value = texture
-    u.uSkyMix.value = texture ? this.superFogAmount : 1
-    u.uSkyIntensity.value = this.scene.backgroundIntensity
-    // 同背景的轉動（three.js 的背景：equirect 轉成 cube 後，旋轉角度取負）
-    u.uSkyMat.value.setFromMatrix4(new THREE.Matrix4().makeRotationY(-THREE.MathUtils.degToRad(this.params.skyRotation)))
-  }
-
-  /** 全景圖地平線那一圈（圖片垂直中間）的平均色 */
-  _sampleHorizonColor(texture) {
-    const canvas = document.createElement('canvas')
-    canvas.width = 64
-    canvas.height = 32
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })
-    ctx.drawImage(texture.image, 0, 0, canvas.width, canvas.height)
-    const { data } = ctx.getImageData(0, canvas.height / 2 - 1, canvas.width, 2)
-    const sum = [0, 0, 0]
-    for (let i = 0; i < data.length; i += 4) {
-      sum[0] += data[i]
-      sum[1] += data[i + 1]
-      sum[2] += data[i + 2]
-    }
-    const count = data.length / 4
-    return new THREE.Color().setRGB(sum[0] / count / 255, sum[1] / count / 255, sum[2] / count / 255, THREE.SRGBColorSpace)
-  }
-
-  /** 切換 3D 場景：載入完放進場景；地面自己會接影子，影子地板先藏起來（疊在一起會有兩層影子） */
   setScene(name) {
     const entry = this.scenes[name]
     if (!entry) return
@@ -770,36 +663,20 @@ class FighterViewer {
     const { x = 0, y = 0, z = 0, rotation = 0, scale = 1 } = entry.transform || {}
     Object.assign(this.params, { envOffsetX: x, envOffsetY: y, envOffsetZ: z, envRotation: rotation, envScale: scale })
     this.stageMaxHalfWidth = entry.halfWidth ?? this.defaultHalfWidth
-    this._setProps(entry.props)
-
-    // 沒有場景：拿掉場景模型，影子地板照 GUI 設定
-    if (!entry.model) {
-      if (this.envModel) this.scene.remove(this.envModel)
-      this.envModel = null
-      if (this.stage) {
-        this._applyStageWidth()
-        this.stage.setGroundVisible(this.params.showGround)
-      }
-      if (this.freeMode?.isActive) this.freeMode.setEnv(null)
-      return
-    }
-    if (!this.envCache[name]) this.envCache[name] = this._loadEnvModel(name, entry)
-    this.envCache[name].then(group => {
-      if (!group || this.params.scene !== name) return // 載入期間又切到別的場景
-      if (this.envModel && this.envModel !== group) this.scene.remove(this.envModel)
-      this.envModel = group
-      this.scene.add(group)
-      this._applyEnvTransform()
-      this._applyStageWidth()
-      if (this.freeMode.isActive) this.freeMode.setEnv(group)
-      this.stage?.setGroundVisible(false)
-    })
+    this.activeProp = null
+    this.environment.setScene(name)
   }
 
-  /** 換場景時換物件：拿掉舊的，照場景設定放新的（目前只有 type: 'sit'） */
-  _setProps(props = []) {
-    this.props.forEach(prop => prop.dispose())
-    this.props = props.filter(p => p.type === 'sit').map(({ type, ...options }) => new SitSpot({ scene: this.scene, ...options }))
+  /**
+   * 場景模型換好了：場地寬度（場景的牆）、自由模式的擋牆；地面自己會接影子，影子地板先藏起來（疊在一起會有兩層影子）
+   * 沒有場景模型：影子地板照 GUI 設定
+   */
+  _onSceneModel(model) {
+    if (this.stage) {
+      this._applyStageWidth()
+      this.stage.setGroundVisible(!model && this.params.showGround)
+    }
+    if (this.freeMode?.isActive) this.freeMode.setEnv(model)
   }
 
   /**
@@ -808,70 +685,97 @@ class FighterViewer {
    */
   _updateProps(delta) {
     const fm = this.freeMode
-    const isSitting = fm.isActive && fm.isSitting('p1')
+    const isBusy = fm.isActive && (fm.isSitting('p1') || fm.isHiding('p1'))
+    if (!isBusy) this.activeProp = null // 被打中等原因中斷了
+    // 靠近的物件只亮最近的那一個（營火和櫃子靠在一起時不會兩個都亮）
+    const near = isBusy ? null : this._getNearProp()
     this.props.forEach(prop => {
-      const isActive = fm.isActive && !this.returning && !this.params.p1AI && (prop === this.sitSpot || (!isSitting && prop.isNear(this.p1)))
-      prop.update(delta, { isActive, isSitting: isSitting && prop === this.sitSpot, camera: this.camera })
+      const isUsing = prop === this.activeProp
+      const isActive = fm.isActive && !this.returning && !this.params.p1AI && (isUsing || prop === near)
+      prop.update(delta, { isActive, label: prop.getLabel(isUsing), camera: this.camera })
     })
   }
 
-  /** F：自由模式中，P1 靠近可以坐下的物件時坐下；坐著時起身 */
+  /** P1 互動距離內、最近的物件 */
+  _getNearProp() {
+    const pos = this.p1?.model.position
+    if (!pos) return null
+    return this.props
+      .filter(prop => prop.isNear(this.p1))
+      .sort((a, b) => a.worldPosition.distanceTo(pos) - b.worldPosition.distanceTo(pos))[0] ?? null
+  }
+
+  /** F：自由模式中，靠近營火坐下 / 起身，靠近櫃子躲進去 / 出來 */
   _interact() {
     const fm = this.freeMode
     if (!fm.isActive || this.params.p1AI) return
     if (fm.isSitting('p1')) {
-      if (fm.standUp('p1')) this.sitSpot = null
+      fm.standUp('p1')
       return
     }
-    const spot = this.props.find(prop => prop.isNear(this.p1))
-    if (spot && fm.sitDown('p1', spot.worldPosition)) this.sitSpot = spot
+    if (fm.isHiding('p1')) {
+      fm.leaveHide('p1')
+      return
+    }
+    const prop = this._getNearProp()
+    if (!prop) return
+    const isStarted = prop.kind === 'hide' ? fm.hideIn('p1', prop) : fm.sitDown('p1', prop.worldPosition)
+    if (isStarted) this.activeProp = prop
+  }
+
+  /** 實心的物件（櫃子）交給自由模式的地形當碰撞物件 */
+  _syncPropColliders() {
+    this.freeMode?.terrain.setColliders(this.props.filter(prop => prop.kind === 'hide').map(prop => prop.group))
+  }
+
+  /** 黑暗霧的設定（GUI）：開關、距離、顏色、天空變暗 */
+  _applyDarkFog() {
+    const { darkFog, darkFogNear, darkFogFar, darkFogSky, darkFogColor } = this.params
+    this.sky.setDarkFog({ enabled: darkFog, near: darkFogNear, far: Math.max(darkFogNear + 0.1, darkFogFar), skyDarken: darkFogSky, color: darkFogColor })
+  }
+
+  /** 黑暗霧的中心：鏡頭，或人物胸口（自由模式 = 鏡頭跟隨的人，格鬥模式 = P1） */
+  _updateDarkFogCenter() {
+    if (!this.params.darkFog) return
+    const fighter = this.freeMode.isActive ? this[this.freeMode.followSlot] : this.p1
+    if (this.params.darkFogCenter === '人物' && fighter) {
+      this.sky.setFogCenter(fighter.model.position.clone().setY(fighter.model.position.y + 1))
+      return
+    }
+    this.sky.setFogCenter(this.camera.position)
   }
 
   /**
-   * 載入 3D 場景模型：外層 Group 管 GUI 的轉動與高度（見 _applyEnvTransform），內層把地面平面轉平、往下移到 y = 0
-   * @returns {Promise<THREE.Group | null>} 載入失敗回傳 null（之後再選一次會重新載入）
+   * 人物的霧：主要視角的人物（自由模式 = 鏡頭跟隨的人，格鬥模式 = P1）一直看得見，其他人物跟場景一樣被霧蓋住（黑暗霧時遠了就看不到）
+   * 只在主要視角換人、或換了人物時才真的切換（Fighter.setFogged 會略過沒變的）
    */
-  async _loadEnvModel(name, { model, ground = [0, 0, 0] }) {
-    if (!this.isLoading) this._showLoading(true, name)
-    try {
-      const gltf = await new GLTFLoader().loadAsync(model, e => this._onProgress(e, name))
-      gltf.scene.traverse(obj => {
-        if (!obj.isMesh) return
-        obj.receiveShadow = true
-        ;[obj.material].flat().forEach(material => this._patchSkyFog(material))
-      })
-      const [a, b, c] = ground
-      const level = new THREE.Group()
-      // 平面 y = a·x + b·z + c 的法線 (-a, 1, -b) 轉到正上方，平面上 (0, c, 0) 那點移到原點
-      level.quaternion.setFromUnitVectors(new THREE.Vector3(-a, 1, -b).normalize(), new THREE.Vector3(0, 1, 0))
-      level.position.set(0, c, 0).applyQuaternion(level.quaternion).negate()
-      level.add(gltf.scene)
-      const group = new THREE.Group()
-      group.add(level)
-      return group
-    } catch (err) {
-      console.warn(`[FighterViewer] 場景模型 ${model} 載入失敗`, err)
-      delete this.envCache[name]
-      return null
-    } finally {
-      if (!this.isLoading) this._showLoading(false)
-    }
+  _updateFighterFog() {
+    const main = this.freeMode.isActive ? this[this.freeMode.followSlot] : this.p1
+    ;[this.p1, this.p2].filter(Boolean).forEach(f => f.setFogged(f !== main, material => this.sky.patchMaterial(material)))
+  }
+
+  /**
+   * \ 鍵：GUI 所有設定回到一開始的值；只重置跟預設值不同的設定（onChange 照常觸發，例如場景、天氣跟著換回來）
+   * 沒變的不動：lil-gui 的 reset 就算值一樣也會觸發 onChange（例如角色會整個重新建立）
+   * 按鈕類（例如「打一次閃電」）不會被觸發
+   */
+  _resetGui() {
+    this.gui?.controllersRecursive().forEach(c => {
+      const value = c.getValue()
+      if (typeof value === 'function' || value === c.initialValue) return
+      c.reset()
+    })
   }
 
   /** 天空水平轉動 */
   _applySkyRotation() {
-    this.scene.backgroundRotation.y = THREE.MathUtils.degToRad(this.params.skyRotation)
-    this.skyDome?.setRotation(this.params.skyRotation)
-    this._updateSkyFog()
+    this.sky.setRotation(this.params.skyRotation)
   }
 
-  /** 3D 場景模型的水平轉動（繞場地中心）、位移與大小 */
+  /** 3D 場景模型的水平轉動（繞場地中心）、位移與大小（GUI） */
   _applyEnvTransform() {
-    if (!this.envModel) return
     const { envRotation, envOffsetX, envOffsetY, envOffsetZ, envScale } = this.params
-    this.envModel.rotation.y = THREE.MathUtils.degToRad(envRotation)
-    this.envModel.position.set(envOffsetX, envOffsetY, envOffsetZ)
-    this.envModel.scale.setScalar(envScale)
+    this.environment.setTransform({ rotation: envRotation, x: envOffsetX, y: envOffsetY, z: envOffsetZ, scale: envScale })
   }
 
   /**
@@ -882,7 +786,7 @@ class FighterViewer {
     this.stageHalfWidth = Math.min(this.stageMaxHalfWidth, this._getSceneWallDistance())
     this.stage.setHalfWidth(this.stageHalfWidth)
     if (this.freeMode) this.freeMode.bounds = this.stageHalfWidth // 沒有場景時，自由模式限制在這個方框內
-    const cam = this.stageLights.dir.shadow.camera
+    const cam = this.core.lights.dirLight.shadow.camera
     cam.left = -this.stageHalfWidth - 2
     cam.right = this.stageHalfWidth + 2
     cam.updateProjectionMatrix()
@@ -894,21 +798,8 @@ class FighterViewer {
    * 射線只在換場景 / 調整場景擺放時算一次，不影響每幀效能
    */
   _getSceneWallDistance() {
-    if (!this.params.sceneWalls || !this.envModel) return Infinity
-    this.envModel.updateMatrixWorld(true)
-    const ray = this.wallRaycaster
-    ray.far = this.stageMaxHalfWidth
-    const origin = new THREE.Vector3()
-    const dir = new THREE.Vector3()
-    let distance = Infinity
-    this.sceneWallHeights.forEach(h => {
-      ;[1, -1].forEach(side => {
-        ray.set(origin.set(0, h, 0), dir.set(side, 0, 0))
-        const hit = ray.intersectObject(this.envModel, true).find(item => item.object.visible)
-        if (hit) distance = Math.min(distance, hit.distance)
-      })
-    })
-    return distance
+    if (!this.params.sceneWalls) return Infinity
+    return this.environment.getWallDistance({ heights: this.sceneWallHeights, maxDistance: this.stageMaxHalfWidth })
   }
 
   /**
@@ -917,14 +808,11 @@ class FighterViewer {
    */
   _applySuperFog(amount) {
     this.superFogAmount = amount
-    if (!this.fog) return
+    if (!this.sky) return
     const { horizonFog, fogNear, fogFar } = this.params
     const sc = this.superCamera
-    const base = horizonFog ? { near: fogNear, far: fogFar } : { near: 1000, far: 1100 }
-    this.fog.color.copy(this.horizonColor).lerp(new THREE.Color(sc.fogColor), amount)
-    this.fog.near = THREE.MathUtils.lerp(base.near, sc.fogNear, amount)
-    this.fog.far = THREE.MathUtils.lerp(base.far, sc.fogFar, amount)
-    this._updateSkyFog()
+    this.sky.setHorizonFog({ enabled: horizonFog, near: fogNear, far: fogFar })
+    this.sky.setFogBlend(amount, { color: sc.fogColor, near: sc.fogNear, far: sc.fogFar })
   }
 
   /**
@@ -932,65 +820,84 @@ class FighterViewer {
    * 絕招聚光燈不受影響，演出時只有放絕招的人被照亮
    */
   _applyStageLight() {
-    if (!this.stageLights) return
-    const dim = 1 + (this.superCamera.dimLevel - 1) * this.superDim
-    const { hemi, dir, base } = this.stageLights
-    hemi.intensity = base.hemi * dim
-    dir.intensity = base.dir * dim
-    this.scene.backgroundIntensity = dim
-    this.skyDome?.setIntensity(dim)
-    this._updateSkyFog()
+    this.core?.setDim(1 + (this.superCamera.dimLevel - 1) * this.superDim)
   }
 
   // internal
 
   _setupScene() {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true })
-    this.renderer.setPixelRatio(window.devicePixelRatio)
-    this.renderer.setSize(window.innerWidth, window.innerHeight)
-    this.renderer.shadowMap.enabled = true
-    this.stageEl.appendChild(this.renderer.domElement)
-
-    this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(0x1b1d22) // 天空載入前的底色
-    // 霧一直掛在場景上、只改顏色與距離：中途才加上或拿掉 scene.fog 會讓所有材質重新編譯，發動絕招時會頓一下
-    // 人物材質關掉 fog（見 Fighter），所以只有場地會被霧蓋住
-    this.fog = new THREE.Fog(this.horizonColor, 1000, 1100)
-    this.scene.fog = this.fog
-    this.skyDome = new SkyDome({ scene: this.scene, cloudCover: this.params.cloudCover })
+    // 遊戲核心（engine/core/gameCore.js）：渲染器、場景、鏡頭、天空、場景模型、時間天氣、燈光、鏡頭工具、遊戲迴圈
+    // 換關卡時這一層一直存在；這裡只接上格鬥遊戲的 hooks
+    const { skyRotation, cloudCover, horizonFog, fogNear, fogFar } = this.params
+    this.core = new GameCore({
+      el: this.stageEl,
+      skies: this.skies,
+      skyOptions: { rotation: skyRotation, cloudCover, horizonFog: { enabled: horizonFog, near: fogNear, far: fogFar } },
+      scenes: this.scenes,
+      lights: { shadowHalfWidth: this.stageHalfWidth + 2 }, // 陰影範圍涵蓋整個場地寬度
+      cameraShake: { duration: this.cameraShake.frames / FPS, frequency: this.cameraShake.frequency },
+      hooks: {
+        onUpdate: realDelta => this._update(realDelta),
+        onBeforeRender: realDelta => this._beforeRender(realDelta),
+        onAfterRender: () => this._afterRender(),
+        getGameDelta: realDelta => (this.params.paused ? 0 : realDelta * this.params.timeScale),
+        isCameraLocked: () => this._isCameraLocked(),
+        isFisheye: () => this.freeMode?.isActive && this.freeMode.isFirstPerson, // 第一人稱的輕微魚眼
+        skipCameraCollision: () => !!this.freeMode?.isFirstPerson, // 第一人稱鏡頭在眼睛，不用避開
+        onSceneModel: model => this._onSceneModel(model),
+        onPropsChange: () => this._syncPropColliders(),
+        onLoadStart: name => !this.isLoading && this._showLoading(true, name),
+        onProgress: (e, name) => this._onProgress(e, name),
+        onLoadEnd: () => !this.isLoading && this._showLoading(false),
+      },
+    })
+    // 原本的名稱照用（main.js 其他地方不用改）
+    const core = this.core
+    Object.assign(this, {
+      renderer: core.renderer,
+      scene: core.scene,
+      camera: core.camera,
+      controls: core.controls,
+      fisheye: core.fisheye,
+      sky: core.sky,
+      environment: core.environment,
+      atmosphere: core.atmosphere,
+      cameraShaker: core.cameraShaker,
+      cameraCollision: core.cameraCollision,
+      cameraDrag: core.cameraDrag,
+    })
+    this.cameraCollision.setEnabled(this.params.cameraCollision)
     this.setSky(this.params.sky)
     this.setScene(this.params.scene)
+    this.defaultCamera = { pos: this.camera.position.clone(), target: this.controls.target.clone() } // 格鬥模式的預設鏡頭（離開自由模式時回到這裡）
 
-    this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100)
-    this.camera.position.set(0, 1.4, 4.5)
-    this.defaultCamera = { pos: this.camera.position.clone(), target: new THREE.Vector3(0, 1, 0) } // 格鬥模式的預設鏡頭（離開自由模式時回到這裡）
-    // 第一人稱的輕微魚眼：視角加大 + 桶狀扭曲（只在第一人稱打開，見 _animate）
-    this.fisheye = new Fisheye({ renderer: this.renderer, scene: this.scene, camera: this.camera })
-
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement)
-    this.controls.target.set(0, 1, 0)
-    this.controls.enableDamping = true
-
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 2)
-    this.scene.add(hemi)
-
-    const dir = new THREE.DirectionalLight(0xffffff, 2.5)
-    dir.position.set(3, 6, 4)
-    dir.castShadow = true
-    // 人物會投影在自己身上，不加 bias 會出現條紋（shadow acne）；貼圖解析度太低時鋸齒也會變成格紋
-    dir.shadow.mapSize.set(2048, 2048)
-    dir.shadow.bias = -0.0005
-    dir.shadow.normalBias = 0.02
-    // 陰影範圍涵蓋整個場地寬度
-    dir.shadow.camera.left = -this.stageHalfWidth - 2
-    dir.shadow.camera.right = this.stageHalfWidth + 2
-    dir.shadow.camera.top = 4
-    dir.shadow.camera.bottom = -4
-    this.scene.add(dir)
-    // 場地燈光：記住原本強度，亮度變化都以這個為準（見 _applyStageLight）
-    this.stageLights = { hemi, dir, base: { hemi: hemi.intensity, dir: dir.intensity } }
+    // 環繞鏡頭（H）、自由模式的滑鼠視角：注視點、按鍵都跟格鬥玩法有關，留在這裡
+    const canvas = this.renderer.domElement
+    this.orbiter = new OrbitCamera({
+      camera: this.camera,
+      controls: this.controls,
+      ...this.orbitCamera,
+      // 注視點：格鬥模式跟著兩人中點，自由模式跟著鏡頭跟隨的人
+      getCenter: target => {
+        const fm = this.freeMode
+        if (fm?.isActive) {
+          const f = this[fm.followSlot]
+          return f ? f.model.position.clone().setY(fm.cameraGroundY + fm.followHeight) : target
+        }
+        if (this.p1 && this.p2) target.x = (this.p1.x + this.p2.x) / 2
+        return target
+      },
+      onEnd: () => { this.controls.enabled = !this._isCinematicCamera() },
+    })
+    // 自由模式：滑鼠中鍵 = 鎖定對手（再按一次解除）；鎖定對手中按任何滑鼠鍵 = 回到一般鏡頭
+    this.pointerLook = new PointerLook({
+      canvas,
+      controls: this.controls,
+      onLook: (dx, dy) => this.freeMode.addLook(dx, dy),
+      onButton: button => (button === 1 ? this.freeMode.toggleLockOn() : this.freeMode.setLockOn(false)),
+      isBlocked: () => !!this.returning,
+    })
     this._applyStageLight()
-
     this._applySuperFog(0)
 
     // 絕招打光：從鏡頭位置往人物照的暖色聚光燈（正面打光，臉上不會有頭頂光的濃陰影），平常強度 0
@@ -1031,7 +938,9 @@ class FighterViewer {
       // 離對手近時用格鬥模式的 AI（對手已換算到自己的方向上，沒有邊界牆）
       aiThink: (slot, self, opponent) => this.ai[slot].think(self, opponent, Infinity),
       isStandGuard: slot => slot === 'p2' && this.params.p2Guard,
+      isCameraHeld: () => this.orbiter.isActive, // 環繞鏡頭（H）中：自由模式不動鏡頭
     })
+    this._syncPropColliders() // 場景的物件比自由模式先建好：補交碰撞物件
     this.hud = new Hud({ camera: this.camera, canvas: this.renderer.domElement, showCoords: this.params.showDebug })
     this.enemyBaseHp = this.combat.gauges.p2.maxHp // 第 1 層敵人的 HP 上限（之後每層加 roguelike enemyHpPerStage）
     this._applyEnemyStage() // 第 1 層：簡單
@@ -1065,7 +974,7 @@ class FighterViewer {
       ...keys.map(key => this.mixamo.loadAnimation(this.anims[key])),
     ])
 
-    if (config.brightness) this._brightenSource(character.scene, config.brightness)
+    if (config.brightness) brightenScene(character.scene, config.brightness)
     if (config.smile) addSmileMorph(character.scene, config.smile)
 
     const clips = {}
@@ -1075,118 +984,23 @@ class FighterViewer {
       const key = keys[i]
       let clip = this.mixamo.bindAnimation(character, anims[i], key)
       const trim = this.trimAnims[key]
-      if (trim) clip = this._trimClip(clip, trim.start ?? 0, trim.end ?? 0)
+      if (trim) clip = trimClip(clip, trim.start ?? 0, trim.end ?? 0, FPS)
       const speed = this.speedAnims[key]
-      if (speed) clip = this._speedUpClip(clip, speed.to, speed.rate)
-      clips[key] = this._makeInPlace(clip, {
+      if (speed) clip = speedUpClip(clip, speed.to, speed.rate, FPS)
+      clips[key] = makeInPlace(clip, {
         isRootMotion: this.rootMotionAnims.includes(key),
         isFlattenRise: this.flattenRiseAnims.includes(key),
         isAxisX: this.rootMotionAxisX.includes(key),
         isCenterHips: this.centerHipsAnims.includes(key),
-        pinTo: this._getHipsPin(clips[this.alignHipsAnims[key]]),
+        pinTo: getHipsPin(clips[this.alignHipsAnims[key]]),
       })
     })
     return { scene: character.scene, clips }
   }
 
-  /** 動作固定後的臀部水平位置 { x, z }（第一格）；沒有臀部 track = null */
-  _getHipsPin(clip) {
-    const values = clip?.tracks.find(t => t.name.endsWith('Hips.position'))?.values
-    return values ? { x: values[0], z: values[2] } : null
-  }
-
-  /**
-   * 人物變亮：材質顏色（會乘上貼圖）乘上倍率，超過 1 = 比貼圖原色亮
-   * 在人物 clone 之前改，Fighter 會把這個顏色當成原色（受擊閃色後回到這個顏色）
-   */
-  _brightenSource(scene, rate) {
-    scene.traverse(obj => {
-      if (!obj.isMesh) return
-      ;[obj.material].flat().forEach(material => material.color?.multiplyScalar(rate))
-    })
-  }
-
-  /**
-   * 裁掉動作開頭 startFrames 幀、結尾 endFrames 幀（遊戲幀）：每條 track 在兩個裁切點補內插出來的 key，中間的 key 往前平移
-   * 要在 _makeInPlace 之前做，root motion 才會從裁切後的第一幀算起
-   */
-  _trimClip(source, startFrames, endFrames) {
-    const start = startFrames / FPS
-    const end = source.duration - endFrames / FPS
-    if (end - start <= 0) return source
-
-    const tracks = source.tracks.map(track => {
-      const size = track.getValueSize()
-      const interpolant = track.createInterpolant()
-      const first = interpolant.evaluate(start).slice()
-      const last = interpolant.evaluate(end).slice()
-      const keep = []
-      track.times.forEach((t, i) => t > start && t < end && keep.push(i))
-
-      const count = keep.length + 2
-      const times = new Float32Array(count)
-      const values = new Float32Array(count * size)
-      values.set(first, 0)
-      keep.forEach((i, n) => {
-        times[n + 1] = track.times[i] - start
-        values.set(track.values.subarray(i * size, (i + 1) * size), (n + 1) * size)
-      })
-      times[count - 1] = end - start
-      values.set(last, (count - 1) * size)
-      return new track.constructor(track.name, times, values)
-    })
-    return new THREE.AnimationClip(source.name, end - start, tracks)
-  }
-
-  /**
-   * 動作開頭 toFrames 幀（遊戲幀）改成 rate 倍速：key 的時間在這段內除以 rate，之後的整段往前平移
-   * 要在 _makeInPlace 之前做，root motion 才會跟著新的時間
-   */
-  _speedUpClip(source, toFrames, rate) {
-    const end = Math.min(toFrames / FPS, source.duration)
-    const remap = t => (t <= end ? t / rate : t - end + end / rate)
-    const tracks = source.tracks.map(track => new track.constructor(track.name, track.times.map(remap), track.values))
-    return new THREE.AnimationClip(source.name, remap(source.duration), tracks)
-  }
-
-  /**
-   * 原地播放：固定臀部的水平位置，讓位移交給程式控制（格鬥遊戲常用作法）
-   * isRootMotion：先把臀部的前後位移（Z）存成 clip.rootMotion，由 Fighter 轉成人物座標
-   * isFlattenRise：臀部高度不超過第一格（保留下蹲、拿掉往上跳）
-   * isAxisX：root motion 改取側向（X）位移
-   * isCenterHips：臀部水平位置固定在原點，而不是第一格的位置
-   * pinTo：{ x, z } 臀部水平位置固定在這裡（對齊另一個動作，見 alignHipsAnims）
-   */
-  _makeInPlace(source, { isRootMotion = false, isFlattenRise = false, isAxisX = false, isCenterHips = false, pinTo = null } = {}) {
-    const clip = source.clone()
-    const hipsTrack = clip.tracks.find(t => t.name.endsWith('Hips.position'))
-    if (!hipsTrack) return clip
-
-    const values = hipsTrack.values
-    const startX = values[0]
-    const startZ = values[2]
-
-    if (isRootMotion) {
-      clip.rootMotion = {
-        axis: isAxisX ? 'x' : 'z',
-        times: hipsTrack.times.slice(),
-        values: hipsTrack.times.map((_, i) => (isAxisX ? values[i * 3] - startX : values[i * 3 + 2] - startZ)),
-      }
-    }
-
-    const startY = values[1]
-    const pinX = pinTo ? pinTo.x : isCenterHips ? 0 : startX
-    const pinZ = pinTo ? pinTo.z : isCenterHips ? 0 : startZ
-    for (let i = 0; i < values.length; i += 3) {
-      values[i] = pinX
-      values[i + 2] = pinZ
-      if (isFlattenRise) values[i + 1] = Math.min(values[i + 1], startY)
-    }
-    return clip
-  }
-
   _setupGui() {
     const gui = new GUI({ title: 'Fighter 控制台' })
+    this.gui = gui // \ 鍵重置所有設定（_resetGui）
     const names = this.characters.map(c => c.name)
     const fighters = () => [this.p1, this.p2].filter(Boolean)
 
@@ -1203,10 +1017,32 @@ class FighterViewer {
     const skyFolder = gui.addFolder('背景（天空盒）').close() // 預設收起
     skyFolder.add(this.params, 'sky', Object.keys(this.skies)).name('天空').listen().onChange(v => this.setSky(v))
     skyFolder.add(this.params, 'skyRotation', 0, 360, 1).name('轉動（度）').onChange(() => this._applySkyRotation())
-    skyFolder.add(this.params, 'cloudCover', 0, 1, 0.05).name('雲量（動態天空）').onChange(v => this.skyDome.setCloudCover(v))
+    skyFolder.add(this.params, 'cloudCover', 0, 1, 0.05).name('雲量（動態天空）').onChange(v => {
+      this.atmosphere.cloudCover = v // 晴天的雲量（陰天、雨天會蓋滿）
+      this.atmosphere.apply()
+    })
     skyFolder.add(this.params, 'horizonFog').name('地平線霧').onChange(() => this._applySuperFog(this.superFogAmount))
     skyFolder.add(this.params, 'fogNear', 0, 60, 1).name('霧開始（m）').onChange(() => this._applySuperFog(this.superFogAmount))
     skyFolder.add(this.params, 'fogFar', 10, 100, 1).name('霧最濃（m）').onChange(() => this._applySuperFog(this.superFogAmount))
+    // 時間與天氣：時間 0 ~ 24 點（可以讓它自己流動）、天氣切換時平滑過渡
+    const atmo = this.atmosphere
+    const timeFolder = gui.addFolder('天氣與時間')
+    timeFolder.add(atmo, 'time', 0, 24, 0.1).name('時間（點）').listen().onChange(v => atmo.setTime(v))
+    timeFolder.add(atmo, 'isRunning').name('時間流動')
+    timeFolder.add(atmo, 'speed', 0, 240, 1).name('流速（分鐘 / 秒）')
+    timeFolder.add(atmo, 'weather', Object.keys(WEATHERS)).name('天氣').onChange(v => atmo.setWeather(v))
+    timeFolder.add(atmo, 'transition', 0, 10, 0.5).name('天氣過渡（秒）')
+    timeFolder.add(atmo.lightning, 'enabled').name('閃電（雨天）')
+    timeFolder.add(atmo, 'triggerLightning').name('打一次閃電')
+    // 黑暗霧：離中心點越遠越暗，最後看不到
+    const darkFolder = gui.addFolder('黑暗霧')
+    const applyDark = () => this._applyDarkFog()
+    darkFolder.add(this.params, 'darkFog').name('開啟').onChange(applyDark)
+    darkFolder.add(this.params, 'darkFogCenter', ['鏡頭', '人物']).name('中心')
+    darkFolder.add(this.params, 'darkFogNear', 0, 40, 0.5).name('開始變暗（m）').onChange(applyDark)
+    darkFolder.add(this.params, 'darkFogFar', 1, 80, 0.5).name('全暗（m）').onChange(applyDark)
+    darkFolder.add(this.params, 'darkFogSky', 0, 1, 0.05).name('天空變暗').onChange(applyDark)
+    darkFolder.addColor(this.params, 'darkFogColor').name('顏色').onChange(applyDark)
 
     const sceneFolder = gui.addFolder('場景（3D 模組）').close()
     sceneFolder.add(this.params, 'scene', Object.keys(this.scenes)).name('3D 場景').listen().onChange(v => this.setScene(v))
@@ -1316,7 +1152,7 @@ class FighterViewer {
   _onHit(attacker, target, { move, isLaunch, isBlock, hitstop }) {
     this.freeMode.faceAttacker(attacker, target) // 自由模式：鏡頭跟隨的人被攻擊（含被防禦）→ 鏡頭平滑轉向攻擊方
     if (isBlock) return
-    this._startCameraShake(this._getCameraShake(attacker))
+    this.cameraShaker.start(this._getCameraShake(attacker))
     if (this.freeMode.isActive) return
     if (move.hitShake) this._startShake(target, hitstop, move.hitShake === true ? this.hitShake.cycles : move.hitShake)
     if (attacker.getCurrentMove()?.hitCamera) {
@@ -1366,7 +1202,7 @@ class FighterViewer {
    * 記住一般鏡頭（注視點與相對位置），拉回時回到這裡；絕招演出還沒結束時用演出開始前的一般鏡頭
    */
   _startHitCamera(attacker) {
-    this._endOrbitCamera() // 環繞中打中：先回到一般鏡頭，命中鏡頭才記得到正確的一般鏡頭
+    this.orbiter.end() // 環繞中打中：先回到一般鏡頭，命中鏡頭才記得到正確的一般鏡頭
     const c = this.cinematic
     const base = c
       ? { target: c.fromTarget.clone(), offset: c.fromOffset.clone() }
@@ -1397,35 +1233,12 @@ class FighterViewer {
 
   /** 鏡頭由程式控制中（OrbitControls 停用）：絕招演出、命中鏡頭、環繞鏡頭 */
   _isCameraLocked() {
-    return !!(this._isCinematicCamera() || this.hitCam || this.orbitCam || this.returning)
+    return !!(this._isCinematicCamera() || this.hitCam || this.orbiter.isActive || this.returning)
   }
 
   /** 絕招演出控制鏡頭中（演出中按 H 環繞後，演出就不再控制鏡頭，只管燈光與凍結） */
   _isCinematicCamera() {
     return !!this.cinematic && !this.cinematic.isCameraFree
-  }
-
-  /**
-   * 渲染前：把拖曳的角度疊在目前鏡頭上，繞注視點轉（垂直角度限制在頭頂 ~ 腳底之間）
-   * 鎖定結束且放開滑鼠：角度直接併進一般鏡頭（不還原），之後交給 OrbitControls
-   */
-  _applyCameraDrag() {
-    const d = this.camDrag
-    d.isApplied = false
-    if (!d.yaw && !d.pitch) return
-    const isBake = !this._isCameraLocked() && !d.isDragging
-    if (!isBake) {
-      d.pos.copy(this.camera.position)
-      d.quat.copy(this.camera.quaternion)
-      d.isApplied = true
-    }
-    const target = this.controls.target
-    this._rotateCamera(this.camera.position, target, d.yaw, d.pitch)
-    this.camera.lookAt(target)
-    if (isBake) {
-      d.yaw = 0
-      d.pitch = 0
-    }
   }
 
   /** 透視剪影只開給鏡頭跟隨的人：自由模式 = 跟隨的人（C 切換），格鬥模式 = P1 */
@@ -1435,56 +1248,11 @@ class FighterViewer {
     ;[this.p1, this.p2].forEach(f => f.setXray(f === target))
   }
 
-  /** 鏡頭避開物體開關（B、GUI）：打開時替場景模型建 BVH，射線才夠快 */
+  /** 鏡頭避開物體開關（B、GUI） */
   _setCameraCollision(isOn) {
     this.params.cameraCollision = isOn
-    this.camCollide.dist = Infinity
-    if (isOn && this.envModel) this.freeMode._buildBVH(this.envModel)
+    this.cameraCollision.setEnabled(isOn)
     this.guiControllers?.cameraCollision.updateDisplay()
-  }
-
-  /**
-   * 渲染前：從注視點往鏡頭發射線，被場景模型擋住就把鏡頭拉近到擋住的地方前面（留 margin，最近 minDist）
-   * 擋住時立刻拉近（不會穿進物體），沒擋住時慢慢退回原本的距離
-   */
-  _applyCameraCollision(delta) {
-    const cc = this.camCollide
-    cc.isApplied = false
-    if (!this.params.cameraCollision || !this.envModel || this.freeMode.isFirstPerson) return // 第一人稱鏡頭在眼睛，不用避開
-    const margin = 0.25
-    const minDist = 0.6
-    const target = this.controls.target
-    const dir = this.camera.position.clone().sub(target)
-    const full = dir.length()
-    if (full < 1e-4) return
-    dir.divideScalar(full)
-
-    this.freeMode._buildBVH(this.envModel) // 換場景後第一次用到時建（已建過會跳過）
-    const ray = cc.raycaster
-    ray.far = full
-    ray.set(target, dir)
-    const hit = ray.intersectObject(this.envModel, true).find(item => item.object.visible)
-    const goal = hit ? Math.max(minDist, hit.distance - margin) : full
-
-    cc.dist = Math.min(cc.dist, full)
-    cc.dist = goal < cc.dist ? goal : cc.dist + (goal - cc.dist) * Math.min(1, delta * 4)
-    if (cc.dist >= full - 1e-3) return
-    cc.pos.copy(this.camera.position)
-    this.camera.position.copy(target).addScaledVector(dir, cc.dist)
-    cc.isApplied = true
-  }
-
-  _restoreCameraCollision() {
-    const cc = this.camCollide
-    if (cc.isApplied) this.camera.position.copy(cc.pos)
-  }
-
-  /** 渲染後：還原成演出鏡頭本身的位置，演出的計算不受拖曳影響 */
-  _restoreCameraDrag() {
-    const d = this.camDrag
-    if (!d.isApplied) return
-    this.camera.position.copy(d.pos)
-    this.camera.quaternion.copy(d.quat)
   }
 
   /**
@@ -1574,30 +1342,10 @@ class FighterViewer {
     this._setHelpMode(false)
   }
 
-  /**
-   * 自由模式的滑鼠操作：打開時鎖定滑鼠（游標隱藏）、OrbitControls 不處理滑鼠拖曳（滾輪縮放照常）；關閉時還原
-   */
+  /** 自由模式的滑鼠操作：打開時鎖定滑鼠（游標隱藏），移動滑鼠轉鏡頭（engine/input/pointerLook.js）；關閉時還原 */
   _setMouseLook(isOn) {
-    const buttons = this.controls.mouseButtons
-    if (isOn) {
-      this.orbitMouseButtons ??= { ...buttons }
-      Object.assign(buttons, { LEFT: null, MIDDLE: null, RIGHT: null })
-      this._lockPointer()
-      return
-    }
-    if (this.orbitMouseButtons) Object.assign(buttons, this.orbitMouseButtons)
-    this.controls.enableZoom = true
-    if (document.pointerLockElement) document.exitPointerLock()
-  }
-
-  /** 鎖定滑鼠（要在按鍵 / 點擊的事件裡呼叫，瀏覽器才允許）；失敗（例如剛按 Esc 放開）就等下次點畫面 */
-  _lockPointer() {
-    const canvas = this.renderer.domElement
-    try {
-      canvas.requestPointerLock()?.catch?.(() => {})
-    } catch {
-      // 不支援或被拒絕：維持游標顯示
-    }
+    this.pointerLook.setEnabled(isOn)
+    if (!isOn) this.controls.enableZoom = true // 第一人稱時關掉的縮放還原
   }
 
   /** 操作說明 / 除錯視窗切換成自由 / 格鬥模式的內容 */
@@ -1612,7 +1360,7 @@ class FighterViewer {
     this.ai.p2.reset()
     this.sound.stopAll()
     this.hitEffect.clear()
-    this.camShake = null
+    this.cameraShaker.stop()
   }
 
   /** 拉近後的鏡頭距離：目前距離 × zoomRate，但不比 superCamera.distance 更近（也不比目前更遠） */
@@ -1622,12 +1370,15 @@ class FighterViewer {
   }
 
   /**
-   * 環繞鏡頭開始（H）：環繞中不理會
+   * 環繞鏡頭開始（H）：環繞中不理會；自由模式繞著鏡頭跟隨的人（第三人稱才可以），環繞中滑鼠不轉鏡頭
    * 絕招演出、命中鏡頭中也可以按：解除它們的鏡頭鎖定，繞的是它們開始前的一般鏡頭；演出本身（燈光、凍結）照常
    * 從目前畫面的鏡頭（含滑鼠拖曳的角度）開始，前 pullTime 秒過渡到環繞的路線，不會跳一下
    */
   startOrbitCamera() {
-    if (!this.p1 || !this.p2 || this.orbitCam || this.freeMode.isActive) return
+    // 自由模式：第一人稱、切換第一 / 第三人稱途中不能環繞
+    const fm = this.freeMode
+    if (!this.p1 || !this.p2 || this.orbiter.isActive || this.returning) return
+    if (fm.isActive && (fm.isFirstPerson || fm.fpBlend)) return
     const c = this.cinematic
     const h = this.hitCam
     let base
@@ -1638,61 +1389,8 @@ class FighterViewer {
     this.hitCam = null
 
     // 起點 = 畫面上看到的鏡頭：拖曳角度併進來後歸零
-    const fromTarget = this.controls.target.clone()
-    const fromPos = this._rotateCamera(this.camera.position.clone(), fromTarget, this.camDrag.yaw, this.camDrag.pitch)
-    this.camDrag.yaw = 0
-    this.camDrag.pitch = 0
-
-    this.orbitCam = { time: 0, ...base, fromPos, fromTarget }
-    this.controls.enabled = false
-  }
-
-  /** pos 繞 target 轉 yaw（水平）、pitch（垂直，限制在頭頂 ~ 腳底之間），回傳 pos */
-  _rotateCamera(pos, target, yaw, pitch) {
-    if (!yaw && !pitch) return pos
-    const sph = new THREE.Spherical().setFromVector3(pos.sub(target))
-    sph.theta += yaw
-    sph.phi = THREE.MathUtils.clamp(sph.phi + pitch, 0.05, Math.PI - 0.05)
-    return pos.setFromSpherical(sph).add(target)
-  }
-
-  /**
-   * 環繞鏡頭每個畫面更新：注視點跟著兩人中點，鏡頭繞著它轉一整圈（慢進慢出）
-   * 距離倍率：前 pullTime 秒拉遠到 pullScale、最後 returnTime 秒拉回 1，轉完剛好回到原本的位置
-   */
-  _updateOrbitCamera(realDelta) {
-    const o = this.orbitCam
-    const { duration, pullTime, returnTime, pullScale } = this.orbitCamera
-    o.time += realDelta
-    const smooth = t => t * t * (3 - 2 * t)
-    const easeInOut = t => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2)
-    const angle = Math.PI * 2 * easeInOut(Math.min(1, o.time / duration))
-    const pullOut = smooth(Math.min(1, o.time / pullTime))
-    const pullBack = smooth(THREE.MathUtils.clamp((duration - o.time) / returnTime, 0, 1))
-    const scale = 1 + (pullScale - 1) * Math.min(pullOut, pullBack)
-
-    const target = o.target.clone()
-    target.x = (this.p1.x + this.p2.x) / 2
-    const offset = o.offset.clone().applyAxisAngle(THREE.Object3D.DEFAULT_UP, angle).multiplyScalar(scale)
-    const pos = target.clone().add(offset)
-    // 前 pullTime 秒：從開始時的鏡頭（例如絕招拉近的鏡頭）過渡到環繞路線
-    this.camera.position.lerpVectors(o.fromPos, pos, pullOut)
-    this.controls.target.lerpVectors(o.fromTarget, target, pullOut)
-    this.camera.lookAt(this.controls.target)
-
-    if (o.time >= duration) this._endOrbitCamera()
-  }
-
-  /** 環繞鏡頭結束：回到開始時的一般鏡頭（注視點對齊兩人中點） */
-  _endOrbitCamera() {
-    const o = this.orbitCam
-    if (!o) return
-    const target = o.target.clone()
-    if (this.p1 && this.p2) target.x = (this.p1.x + this.p2.x) / 2
-    this.camera.position.copy(target).add(o.offset)
-    this.controls.target.copy(target)
-    this.controls.enabled = !this._isCinematicCamera()
-    this.orbitCam = null
+    const from = { pos: this.cameraDrag.takeRotatedPosition(), target: this.controls.target.clone() }
+    this.orbiter.start(base, from)
   }
 
   /** 命中鏡頭直接回到一般鏡頭（Esc 重置、換人物） */
@@ -1761,9 +1459,9 @@ class FighterViewer {
 
   /** 絕招演出開始：人物停在招式第 0 幀，鏡頭從目前位置拉近到人物胸口 */
   _startCinematic(fighter, key) {
-    this._endOrbitCamera() // 環繞中放絕招：先回到一般鏡頭，演出結束才回得去
+    this.orbiter.end() // 環繞中放絕招：先回到一般鏡頭，演出結束才回得去
     fighter.snapToCurrentAction() // 演出停頓期間顯示絕招的第 1 幀（不從之前的動作淡入）
-    // 畫面補間的「上一幀」也記成絕招第 1 幀：之後 _animate 會再記一次，前後兩幀都是絕招第 1 幀
+    // 畫面補間的「上一幀」也記成絕招第 1 幀：之後 _update 會再記一次，前後兩幀都是絕招第 1 幀
     // 不然 animStart 是 zoomOut / after 的絕招（凍結期間不推進），凍結結束的第一個畫面會內插回出招前的姿勢（看起來像閃回閒置）
     fighter.captureFrame()
 
@@ -1786,34 +1484,6 @@ class FighterViewer {
     const shake = move?.cameraShake ?? (move?.isSuper ? this.cameraShake.superAmplitude : 0)
     if (Array.isArray(shake)) return shake[attacker.hitWindow] || 0
     return shake || 0
-  }
-
-  /** 開始鏡頭晃動（amp 公尺）；前一次還在晃時取比較大的幅度、從頭開始 */
-  _startCameraShake(amp) {
-    if (!amp) return
-    const remain = this.camShake ? this.camShake.amp * (1 - this.camShake.time / this.camShake.duration) : 0
-    this.camShake = { amp: Math.max(amp, remain), time: 0, duration: this.cameraShake.frames / FPS, phase: Math.random() * Math.PI * 2 }
-  }
-
-  /**
-   * 渲染前把晃動位移加到鏡頭上（渲染後由 _animate 扣回），不影響跟隨鏡頭、滑鼠操作與演出鏡頭的計算
-   * 上下、左右用不同頻率，看起來比較像震動而不是規律擺動
-   */
-  _applyCameraShake(delta) {
-    this.camShakeOffset.set(0, 0, 0)
-    const c = this.camShake
-    if (!c) return
-    c.time += delta
-    if (c.time >= c.duration) {
-      this.camShake = null
-      return
-    }
-    const k = c.amp * (1 - c.time / c.duration)
-    const w = Math.PI * 2 * this.cameraShake.frequency * c.time
-    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0)
-    const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1)
-    this.camShakeOffset.addScaledVector(right, k * Math.sin(w + c.phase)).addScaledVector(up, k * 0.8 * Math.sin(w * 1.37 + c.phase * 2))
-    this.camera.position.add(this.camShakeOffset)
   }
 
   /** 受擊搖晃：頓幀 frames 幀內沿 z 軸搖完 cycles 次 */
@@ -1851,7 +1521,7 @@ class FighterViewer {
   resetAll() {
     if (!this.p1 || !this.p2) return
     this._endHitCamera()
-    this._endOrbitCamera()
+    this.orbiter.end()
     if (this.cinematic) {
       // 鏡頭直接回到一般位置
       const c = this.cinematic
@@ -1869,7 +1539,7 @@ class FighterViewer {
     this.hitEffect.clear()
     if (this.shake) this.shake.fighter.model.position.z = 0
     this.shake = null
-    this.camShake = null
+    this.cameraShaker.stop()
     this.accumulator = 0
     this.combat.reset()
     this.pendingDash = { p1: 0, p2: 0 }
@@ -1986,37 +1656,33 @@ class FighterViewer {
     this.progressEl.textContent = `${label} ${Math.round((e.loaded / e.total) * 100)}%`
   }
 
-  _resize() {
-    this.camera.aspect = window.innerWidth / window.innerHeight
-    this.camera.updateProjectionMatrix()
-    this.renderer.setSize(window.innerWidth, window.innerHeight)
-    this.fisheye?.setSize(window.innerWidth, window.innerHeight)
-  }
-
-  _animate = () => {
-    requestAnimationFrame(this._animate)
-    // 切分頁回來時 delta 可能很大，限制上限避免一次補太多幀
-    const realDelta = Math.min(this.clock.getDelta(), 0.1)
-
+  /**
+   * 每個畫面的遊戲更新（GameCore hooks.onUpdate）：絕招演出、格鬥 / 自由模式的邏輯、角色補間、鏡頭跟隨
+   * 之後 GameCore 會更新 OrbitControls（鏡頭沒被鎖住時）、天空、時間天氣
+   */
+  _update(realDelta) {
     if (this.cinematic) this._updateCinematic(realDelta)
 
     const fighters = this.p1 && this.p2 ? [this.p1, this.p2] : []
+    const gameDelta = this.params.paused ? 0 : realDelta * this.params.timeScale
     // 自由模式：不跑格鬥邏輯與畫面補間，人物由 FreeMode 直接移動
     const isFree = this.freeMode.isActive
+    this.isFreeFrame = isFree // 渲染後還原姿勢時要知道這個畫面是哪種模式（_afterRender）
     if (fighters.length && this.returning) {
       this._updateFightReturn(realDelta) // 自由 → 格鬥模式的過渡：遊戲不推進
       this.footMarker.update()
     } else if (fighters.length && isFree) {
-      this.freeMode.update(this.params.paused ? 0 : realDelta * this.params.timeScale, this.keys, { p1: this.params.p1AI, p2: this.params.p2AI }, realDelta)
+      this.freeMode.update(gameDelta, this.keys, { p1: this.params.p1AI, p2: this.params.p2AI }, realDelta)
+      if (this.orbiter.isActive) this.orbiter.update(realDelta) // 環繞鏡頭（H）：繞著鏡頭跟隨的人
       this.freeMode.applyInterpolation(this.params.paused)
-      this.hitEffect.update(this.params.paused ? 0 : realDelta * this.params.timeScale)
+      this.hitEffect.update(gameDelta)
       this.footMarker.update() // 推擠框跟著人物走，腳底橢圓也跟著
       this.hud.updateCoords(fighters) // 除錯顯示的座標（含 z）
     } else if (fighters.length) {
       const step = 1 / FPS
       // 選升級牌、結算視窗中：遊戲停住
       if (!this._isFrozen() && !this.roguelike.isMenuOpen) {
-        this.accumulator += this.params.paused ? 0 : realDelta * this.params.timeScale
+        this.accumulator += gameDelta
         // 絕招演出開始後剩下的時間不再補幀
         while (this.accumulator >= step && !this._isFrozen()) {
           this.accumulator -= step
@@ -2029,38 +1695,48 @@ class FighterViewer {
       // 畫面補間：在上一幀與這一幀之間內插（凍結 / 暫停時直接顯示這一幀）
       const alpha = this._isFrozen() || this.params.paused || this.roguelike.isMenuOpen ? 1 : this.accumulator / step
       fighters.forEach(f => f.applyInterpolation(alpha))
-      this._updateShake(this.params.paused ? 0 : realDelta * this.params.timeScale)
-      this.hitEffect.update(this.params.paused ? 0 : realDelta * this.params.timeScale)
+      this._updateShake(gameDelta)
+      this.hitEffect.update(gameDelta)
 
+      // 演出中由 _updateCinematic 控制鏡頭、命中鏡頭中由 _updateHitCamera 控制、環繞中由 orbiter 控制
       if (this.hitCam) this._updateHitCamera(realDelta)
-      else if (this.orbitCam) this._updateOrbitCamera(realDelta)
+      else if (this.orbiter.isActive) this.orbiter.update(realDelta)
       else if (!this._isCinematicCamera()) this._followCamera(realDelta)
       this.hud.updateCoords(fighters)
       // 人物位置更新完才對齊腳底橢圓
       this.footMarker.update()
     }
+  }
 
-    // 演出中由 _updateCinematic 控制鏡頭、命中鏡頭中由 _updateHitCamera 控制、環繞中由 _updateOrbitCamera 控制
-    if (!this._isCameraLocked()) this.controls.update()
+  /** 渲染前（GameCore hooks.onBeforeRender）：HUD、霧的中心、人物的霧、互動物件、透視剪影 */
+  _beforeRender(realDelta) {
+    const gameDelta = this.params.paused ? 0 : realDelta * this.params.timeScale
     this.hud.update(realDelta)
     this.hud.updateGauges(this.combat.gauges)
     this.hud.updateComboDebug(this.combat.comboStats)
-    this.skyDome.update(realDelta, this.camera)
-    if (!this.freeMode.isSitting('p1')) this.sitSpot = null // 被打中等原因中斷坐下
-    this._updateProps(this.params.paused ? 0 : realDelta * this.params.timeScale)
-
+    this._updateDarkFogCenter()
+    this._updateFighterFog()
+    this._updateProps(gameDelta)
     this._updateXray()
-    this._applyCameraDrag()
-    this._applyCameraCollision(realDelta)
-    this._applyCameraShake(this.params.paused ? 0 : realDelta * this.params.timeScale)
-    this.fisheye.update(realDelta, this.freeMode.isActive && this.freeMode.isFirstPerson)
-    this.fisheye.render()
-    this.camera.position.sub(this.camShakeOffset) // 晃動只影響這個畫面
-    this._restoreCameraCollision()
-    this._restoreCameraDrag()
-    // 還原成邏輯幀的姿勢，下一次推進從正確的狀態繼續
-    if (isFree) this.freeMode.restoreFrames()
-    else fighters.forEach(f => f.restoreFrame())
+    this._updateWeatherSound()
+  }
+
+  /**
+   * 天氣聲：雨聲的音量 = 雨量（雨量依天氣過渡慢慢變，所以開始下雨漸大聲、雨停漸小聲）
+   * 只在音量變了一點以上才更新（Sound.setLoop 每次會重新開始淡入淡出）
+   */
+  _updateWeatherSound() {
+    const level = this.atmosphere.rainAmount
+    const last = this.rainSoundLevel ?? 0
+    if (Math.abs(level - last) < 0.02 && !(level === 0 && last !== 0)) return
+    this.rainSoundLevel = level
+    this.sound.setLoop('raining', level, this.weatherSoundFade)
+  }
+
+  /** 渲染後（GameCore hooks.onAfterRender）：還原成邏輯幀的姿勢，下一次推進從正確的狀態繼續 */
+  _afterRender() {
+    if (this.isFreeFrame) this.freeMode.restoreFrames()
+    else [this.p1, this.p2].filter(Boolean).forEach(f => f.restoreFrame())
   }
 }
 

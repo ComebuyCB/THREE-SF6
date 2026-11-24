@@ -2,6 +2,7 @@
  * Sound：音效播放（Web Audio，延遲比 <audio> 低，同一個音效可以重疊播放）
  * 瀏覽器規定要使用者操作過才能出聲，第一次按鍵 / 點擊時自動解鎖
  * files 每個音效給網址，或 { url, volume } 個別調整音量（再乘上總音量）
+ * 循環播放（環境聲、天氣聲，setLoop）：音量平滑變過去（淡入淡出），降到 0 後停止；stopAll / stopGroup 不會停掉它
  */
 export class Sound {
   constructor(options) {
@@ -30,6 +31,8 @@ export class Sound {
     this.volumes = {} // name → 個別音量
     this.playing = new Set() // 播放中的 AudioBufferSourceNode，stopAll 用
     this.groups = new Map() // 分組 → 播放中的 AudioBufferSourceNode（例如某個人物的招式音效，stopGroup 用）
+    this.loops = {} // name → { source, gain, stopTimer }：循環播放中
+    this.loopTargets = {} // name → { level, fade }：最後要求的音量（還沒解鎖 / 還沒載入時先記著）
 
     // 5. init
     this.init()
@@ -44,7 +47,9 @@ export class Sound {
     })
 
     const unlock = () => {
-      if (this.ctx.state === 'suspended') this.ctx.resume()
+      if (this.ctx.state !== 'suspended') return
+      // 解鎖後補上還在等的循環播放（例如一開始就是雨天）
+      this.ctx.resume().then(() => this._applyLoops())
     }
     window.addEventListener('keydown', unlock)
     window.addEventListener('pointerdown', unlock)
@@ -107,6 +112,40 @@ export class Sound {
     this.groups.clear()
   }
 
+  /**
+   * 循環播放（環境聲、天氣聲）：音量 level 0 ~ 1（再乘上個別音量），fade 秒平滑變過去；降到 0 後停止播放
+   * 只在音量要改變時呼叫（每次呼叫都會從目前的音量重新開始淡入 / 淡出）
+   */
+  setLoop(name, level, fade = 2) {
+    this.loopTargets[name] = { level, fade }
+    if (this.ctx.state !== 'running' || !this.buffers[name]) return // 解鎖 / 載入好之後再套用（_applyLoops）
+    let loop = this.loops[name]
+    if (!loop) {
+      if (level <= 0) return
+      const source = this.ctx.createBufferSource()
+      source.buffer = this.buffers[name]
+      source.loop = true
+      const gain = this.ctx.createGain()
+      gain.gain.value = 0
+      source.connect(gain).connect(this.gain)
+      source.start()
+      loop = this.loops[name] = { source, gain, stopTimer: null }
+    }
+    const t = this.ctx.currentTime
+    const g = loop.gain.gain
+    g.cancelScheduledValues(t)
+    g.setValueAtTime(g.value, t)
+    g.linearRampToValueAtTime(level * (this.volumes[name] ?? 1), t + Math.max(0.01, fade))
+    clearTimeout(loop.stopTimer)
+    if (level > 0) return
+    // 淡出完才停（中途又要求變大聲就不停）
+    loop.stopTimer = setTimeout(() => {
+      if ((this.loopTargets[name]?.level ?? 0) > 0) return
+      loop.source.stop()
+      delete this.loops[name]
+    }, fade * 1000 + 50)
+  }
+
   setVolume(volume) {
     this.volume = volume
     this.gain.gain.value = volume
@@ -114,10 +153,18 @@ export class Sound {
 
   // internal
 
+  /** 補上還在等的循環播放 */
+  _applyLoops() {
+    Object.entries(this.loopTargets).forEach(([name, { level, fade }]) => {
+      if (!this.loops[name] && level > 0) this.setLoop(name, level, fade)
+    })
+  }
+
   async _load(name, url) {
     try {
       const res = await fetch(url)
       this.buffers[name] = await this.ctx.decodeAudioData(await res.arrayBuffer())
+      if (this.loopTargets[name]) this._applyLoops() // 載入前就要求循環播放的（例如一開始就是雨天）
     } catch (err) {
       console.warn(`[Sound] ${url} 載入失敗`, err)
     }

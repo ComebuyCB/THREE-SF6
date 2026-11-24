@@ -1,8 +1,6 @@
 import * as THREE from 'three'
-import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh'
 import { KNOCK_DECAY } from './fighter.js'
-
-const DOWN = new THREE.Vector3(0, -1, 0)
+import { Terrain } from '../../engine/world/terrain.js'
 
 /**
  * FreeMode：自由模式，人物在 3D 場景裡前後左右自由跑動；打架用跟格鬥模式同一套戰鬥流程（combat.js）
@@ -14,6 +12,11 @@ const DOWN = new THREE.Vector3(0, -1, 0)
  *   比腳底高超過 stepUp 的當成牆（爬不上去，要跳上去）；比腳底低超過 stepDown（走出平台邊緣）就從當下高度落下
  *   跳躍 / 落下時看腳下的場景：落到比起跳處高的平台上就站在上面（Fighter.getFloor）
  *   格鬥模式不受影響（groundY 固定 0）
+ * - 卡進模型：每個畫面
+ *   1. 穿牆檢查：上一個畫面的位置到現在之間有牆（沒經過碰撞的移動，例如抓技拉過來、招式位移）→ 停在牆前
+ *   2. 把人物當成膠囊體推出場景（Terrain.depenetrate）
+ *   3. 推了還是卡著、或站在地上卻找不到地板（在空心的模型裡）超過 unstick.time 秒 → 放回最後一個安全位置
+ *   安全位置每 unstick.saveEvery 秒記一次：站在地上、沒卡住的位置
  * - 留在場景內：腳下（往前一點）往下沒有場景模型 = 場景邊緣，擋住不能走出去；沒有場景時限制在 |x|、|z| ≤ bounds 的方框內
  * - 推擠框跟著人物走：兩人重疊時各退一半
  *
@@ -34,6 +37,10 @@ const DOWN = new THREE.Vector3(0, -1, 0)
  * - 絕招沒有鏡頭演出：從動畫開頭直接播，原本演出凍結的幀數另一名角色凍結不動（Combat.freeze）
  * - 坐下（sitDown / standUp，main.js 按 F 時呼叫）：sitAnims.down 倒著播 → sitAnims.idle 循環；再按一次 sitAnims.down 正著播 → 回到自由移動
  *   坐著（含坐下、起身途中）不能移動、出招；被打中就直接中斷
+ * - 躲進櫃子（hideIn / leaveHide，main.js 按 F 時呼叫，櫃子見 engine/world/hideSpot.js）：
+ *   開門、走到門前、走進去、轉身、關門 → 躲好（isHidden：AI 看不到）；再按一次：開門、走出來、門自己關上
+ *   躲藏途中不能移動、出招，也不做卡牆推出；被打中就直接中斷
+ * - 環繞鏡頭（main.js 的 H）：isCameraHeld() 為 true 時這裡不動鏡頭
  * - 招式有 aimOpponent（例如風擺柳碎步）：放招時朝向對手；穿越（閃身步）每次穿越開始時對準對手
  *
  * AI：靠視野索敵（aiSight）：面向左右各 angle 度、range 公尺內，而且中間沒有場景擋住，才算看到對手
@@ -44,11 +51,12 @@ const DOWN = new THREE.Vector3(0, -1, 0)
  *   滑鼠游標隱藏（main.js 鎖定滑鼠），移動滑鼠 = 繞著人物轉鏡頭（addLook）；滑鼠中鍵鎖定對手，鎖定中按任何滑鼠鍵回到一般鏡頭
  *   進入時平滑轉成俯角 enterPitch 度、距離拉遠成 enterZoom 倍
  *   跟隨的人被攻擊（打中或被防禦）時，鏡頭平滑轉向攻擊方（faceAttacker，hitTurn）；轉的途中移動滑鼠就停止
+ * 第一人稱切換（N）：鏡頭 firstPerson.transition 秒平滑移過去；進第一人稱時移到眼睛才把頭藏起來，回第三人稱時頭馬上補回、鏡頭再拉回背後
  * 第一人稱（N，toggleFirstPerson）：鏡頭放在跟隨的人頭的位置（身體照常顯示，只有頭在渲染時縮到看不見），滑鼠轉視角，人物一直面向視角方向
  *   W / S / A / D = 往前跑 / 往後走 / 往左右側走（後走、側走用 walk 動作與 firstPerson 的速度倍率）
  *   只有按著後（S）才算防禦；出招、跳躍、衝刺取消朝視角方向（S 跳 = 往後跳）；鎖定對手時視角轉向對手
  *
- * 場景模型很大，射線用 three-mesh-bvh 加速（第一次進自由模式時替場景網格建 BVH，之後沿用）
+ * 擋牆、留在場景內、地板高度、視線都交給 Terrain（engine/world/terrain.js）
  */
 export class FreeMode {
   constructor(options) {
@@ -66,6 +74,8 @@ export class FreeMode {
       // 地面高度：stepUp = 走路能直接踩上去的高度差（從腳底上方這麼高往下找地板），stepDown = 往下超過這個高度差就落下，
       // far = 往下找多遠，cameraSpeed = 鏡頭高度跟上地面高度的快慢
       floor: { stepUp: 0.35, stepDown: 0.4, far: 30, cameraSpeed: 8 },
+      // 卡進模型：depth = 推完還重疊多少（公尺）算卡著、time = 卡著幾秒就放回安全位置、saveEvery = 幾秒記一次安全位置
+      unstick: { depth: 0.05, time: 0.3, saveEvery: 0.25 },
       followHeight: 1, // 鏡頭注視點在人物腳底上方多高（公尺）
       switchTime: 0.6, // C 切換跟隨的人：注視點移過去的秒數
       enterPitch: 30, // 進入自由模式時的鏡頭俯角（度）
@@ -75,15 +85,23 @@ export class FreeMode {
       lookSpeed: 0.0025, // 滑鼠轉鏡頭：每移動 1 像素轉幾弧度
       // 被攻擊時鏡頭轉向攻擊方：speed = 轉向速度（越大越快，每秒靠近剩餘角度的比例），time = 最多轉幾秒
       hitTurn: { speed: 3, time: 1.2 },
-      pitchRange: [0.15, 1.6], // 第三人稱鏡頭的垂直角度範圍（弧度，0 = 正上方、π/2 = 水平）
+      pitchRange: [0.15, 2.6], // 第三人稱鏡頭的垂直角度範圍（弧度，0 = 正上方、π/2 = 水平、超過 = 從下往上看）
+      cameraFloorGap: 0.25, // 第三人稱鏡頭最低離地多高（公尺）：往下壓到地面時鏡頭往人物拉近（只影響畫面）
+      cameraFloorMinDist: 1.8, // 貼地時最近拉到多近（公尺）；再往下壓就改成視線往上抬（看天空，人物在畫面下方）
       // 第一人稱：鏡頭 = Head 骨頭往上 eyeUp、往視角方向 eyeForward 公尺（沒有 Head 骨頭時用身高 × eyeRate）
       //   maxPitch = 上下最多看幾弧度，startPitch = 打開第一人稱時的視角（度，負數 = 往下看），back / side = 後走、側走的速度倍率（相對跑步）
-      firstPerson: { eyeUp: 0.08, eyeForward: 0.03, eyeRate: 0.93, maxPitch: 1.3, startPitch: -10, back: 0.5, side: 0.7 },
+      //   transition = 切換第一 / 第三人稱時鏡頭移過去的秒數
+      //   headHideLead = 切換時鏡頭到位前幾秒就先藏頭（鏡頭最後幾幀已經進到頭裡，晚藏會看到臉的內側閃一下）
+      //   deathRise = 倒地不起（死亡動畫）的最後 frames 幀，視角平滑往上抬 deg 度（疊在當下的視角上，停在最後一幀時維持）
+      firstPerson: { transition: 0.4, headHideLead: 0.05, deathRise: { frames: 50, deg: 25 }, eyeUp: 0.08, eyeForward: 0.03, eyeRate: 0.93, maxPitch: 1.3, startPitch: -10, back: 0.5, side: 0.7 },
       fps: 60, // 格鬥邏輯的幀率（同 fighter.js）
       overheadRate: 0.8, // 高度差超過身高的這個比例就不推擠（越過頭頂）
       dashStyle: { anim: 'fastRun', speedRate: 2 }, // 自由模式的衝刺：動作、位移倍率（相對格鬥模式）
       // 坐下：down = 起身動作（坐下時倒著播、起身時正著播），idle = 坐著循環
       sitAnims: { down: 'standUp', idle: 'sitIdle' },
+      // 躲進櫃子：走路速度（公尺 / 秒）、轉身秒數、進到櫃子裡之後站著的動作（沒有這個動作的人物用 idle）
+      hide: { walkSpeed: 1.6, turnTime: 0.35, idleAnim: 'hideIdle' },
+      isCameraHeld: null, // () → 鏡頭由別人控制中（例如環繞鏡頭），這裡不動鏡頭
       sprintRate: 2, // 快跑：跑步速度倍率
       jumpSpeedRate: 2, // 自由模式斜跳的水平速度倍率（相對格鬥模式；跳的高度、滯空時間不變）
       // 空中操控（只在跳躍的浮空狀態）：turnSpeed = 轉向速度（弧度 / 秒），accel = 水平速度靠近目標的快慢（越大越快）
@@ -123,8 +141,8 @@ export class FreeMode {
     // slot → { dir（格鬥邏輯的 +x 方向）, localRot（格鬥邏輯裡的轉向）, isEngine（由格鬥邏輯控制）, isJumpHeld, wander }
     this.states = {}
     this.accumulator = 0 // 尚未消化的時間，累積滿 1 幀推進格鬥邏輯
-    this.env = null // 場景模型（沒有場景 = 用 bounds 方框）
-    this.bounds = null // 沒有場景時的範圍：|x|、|z| ≤ bounds（公尺）；null = 不限制
+    // 地形查詢：擋牆、場景邊緣、地板高度、視線（沒有場景時限制在 bounds 方框內，見 bounds）
+    this.terrain = new Terrain({ radius: this.radius, rayHeights: this.rayHeights, groundRay: this.groundRay, floorRay: { stepUp: this.floor.stepUp, far: this.floor.far } })
     this.followSlot = 'p1' // 鏡頭跟著誰
     this.followBlend = null // 切換跟隨中：{ from（注視點起點）, t（0 ~ 1） }
     this.offsetBlend = null // 進入時的鏡頭轉向：{ from, to（鏡頭相對注視點的位置）, t }
@@ -134,16 +152,15 @@ export class FreeMode {
     this.isFirstPerson = false // N：第一人稱
     // 第一人稱的視角（yaw 同人物 rotation.y、pitch 往上為正）；distance / height = 切回第三人稱時鏡頭的距離與仰角（sin）
     this.fp = { yaw: 0, pitch: 0, distance: 3, height: 0.6 }
+    // 第一 / 第三人稱切換中：{ isIn（往第一人稱）, t（0 ~ 1）, fromPos, fromTarget（開始時的鏡頭）, offset（回第三人稱時的目標鏡頭位置，相對注視點）}
+    this.fpBlend = null
     this.interpolated = [] // 這個畫面做了補間的人（渲染後還原）
-    this.raycaster = new THREE.Raycaster()
-    this.raycaster.firstHitOnly = true
     this.cameraGroundY = 0 // 鏡頭注視點跟著的地面高度（平滑跟上跟隨的人的 groundY）
+    this.floorClamp = null // 這個畫面鏡頭被地面擋住、往人物拉近前的位置（渲染後還原）
     this.forward = new THREE.Vector3()
     this.right = new THREE.Vector3()
     this.input = new THREE.Vector3()
     this.step = new THREE.Vector3()
-    this.origin = new THREE.Vector3()
-    this.normal = new THREE.Vector3()
     this.space = new PlaneSpace(this) // 給 Combat 用的空間規則
   }
 
@@ -161,12 +178,17 @@ export class FreeMode {
       wander: { dir: new THREE.Vector3(), time: 0, isMoving: false },
       lostTime: Infinity, // AI：多久沒看到對手（秒）；memory 內 = 還記得、會追
       sit: null, // 坐下中：{ phase: 'down' | 'idle' | 'up' }
+      hide: null, // 躲櫃子中：{ spot, phase: 'approach' | 'enter' | 'turn' | 'close' | 'hidden' | 'open' | 'exit', t, from }
+      safe: null, // 最後一個安全位置：{ pos, groundY }
+      safeTimer: 0,
+      stuckTime: 0, // 連續卡著幾秒
+      lastPos: null, // 上一個畫面的位置（穿牆檢查）
     }]))
     this.accumulator = 0
     this.setEnv(env)
     Object.values(fighters).forEach(f => {
       // 地面高度跟著場景：先站到腳下的地板上，跳躍 / 落下時落在場景上
-      f.getFloor = fighter => this._getFloor(fighter.model.position)
+      f.getFloor = fighter => this.terrain.getFloor(fighter.model.position)
       f.groundY = 0
       this._followGround(f, true)
       f.isFreeFacing = true
@@ -192,6 +214,8 @@ export class FreeMode {
 
   exit() {
     if (this.isFirstPerson) this.toggleFirstPerson()
+    Object.entries(this.fighters).forEach(([slot, f]) => this._cancelHide(f, this.states[slot]))
+    this.fpBlend = null
     Object.values(this.fighters).forEach(f => {
       // 回到格鬥模式：地面 y = 0（main.js 接著 resetAll 讓人物站回地面）
       f.getFloor = null
@@ -204,13 +228,21 @@ export class FreeMode {
     this.isLockOn = false
     this.fighters = {}
     this.states = {}
-    this.env = null
+    this.terrain.setEnv(null)
   }
 
   /** 換擋牆用的場景（自由模式中切換場景時） */
   setEnv(env) {
-    this.env = env
-    if (env) this._buildBVH(env)
+    this.terrain.setEnv(env)
+  }
+
+  /** 沒有場景時的範圍：|x|、|z| ≤ bounds（公尺）；null = 不限制（main.js 依打鬥場地寬度設定） */
+  get bounds() {
+    return this.terrain.bounds
+  }
+
+  set bounds(value) {
+    this.terrain.bounds = value
   }
 
   /** 滑鼠移動（鎖定滑鼠時，main.js 呼叫）：累積起來，下一次 _updateCamera 轉鏡頭 */
@@ -231,22 +263,27 @@ export class FreeMode {
     this.offsetBlend = null
     this.followBlend = null
     this.controls.enableZoom = !this.isFirstPerson
+    // 從目前畫面上的鏡頭開始平滑移過去（切換到一半又按 N 也從當下的位置接著移）
+    const from = { fromPos: this.camera.position.clone(), fromTarget: this.controls.target.clone() }
     if (this.isFirstPerson) {
-      const offset = this.camera.position.clone().sub(this.controls.target)
-      const length = offset.length() || 3
-      this.fp.distance = length
-      this.fp.height = offset.y / length
-      this.fp.yaw = Math.atan2(-offset.x, -offset.z) // 看的方向 = 鏡頭 → 注視點
-      this.fp.pitch = THREE.MathUtils.degToRad(this.firstPerson.startPitch) // 預設稍微往下看
+      // 切換途中再按回來：視角維持原本的（不從中途的鏡頭重新算）
+      if (!this.fpBlend) {
+        const offset = this.camera.position.clone().sub(this.controls.target)
+        const length = offset.length() || 3
+        this.fp.distance = length
+        this.fp.height = offset.y / length
+        this.fp.yaw = Math.atan2(-offset.x, -offset.z) // 看的方向 = 鏡頭 → 注視點
+        this.fp.pitch = THREE.MathUtils.degToRad(this.firstPerson.startPitch) // 預設稍微往下看
+      }
+      this.fpBlend = { isIn: true, t: 0, ...from }
       return
     }
     if (!fighter) return
-    // 回到第三人稱：鏡頭放在人物背後（視角方向的反方向）
+    // 回到第三人稱：目標是人物背後（視角方向的反方向），距離、仰角同打開前；頭不用等，馬上補回（不再呼叫 _placeFirstPersonCamera）
     const { distance, height } = this.fp
     const flat = Math.sqrt(Math.max(0, 1 - height * height)) * distance
-    const target = fighter.model.position.clone().setY(this.cameraGroundY + this.followHeight)
-    this.controls.target.copy(target)
-    this.camera.position.set(target.x - Math.sin(this.fp.yaw) * flat, target.y + height * distance, target.z - Math.cos(this.fp.yaw) * flat)
+    const offset = new THREE.Vector3(-Math.sin(this.fp.yaw) * flat, height * distance, -Math.cos(this.fp.yaw) * flat)
+    this.fpBlend = { isIn: false, t: 0, ...from, offset }
   }
 
   /**
@@ -270,10 +307,18 @@ export class FreeMode {
     this.offsetBlend = null
   }
 
-  /** C：鏡頭改跟另一個人（注視點平滑移過去，距離、角度不變；第一人稱時換成那個人的眼睛） */
+  /**
+   * C：鏡頭改跟另一個人（注視點平滑移過去，距離、角度不變）
+   * 第一人稱：鏡頭從目前的眼睛平滑移到那個人的眼睛（同切換第一人稱的過渡，到了才藏頭），視角換成他面向的方向
+   */
   switchFollow() {
     if (!this.isActive) return
     this.followSlot = this.followSlot === 'p1' ? 'p2' : 'p1'
+    if (this.isFirstPerson) {
+      this.fp.yaw = this.fighters[this.followSlot].model.rotation.y
+      this.fpBlend = { isIn: true, t: 0, fromPos: this.camera.position.clone(), fromTarget: this.controls.target.clone() }
+      return
+    }
     this.followBlend = { from: this.controls.target.clone(), t: 0 }
   }
 
@@ -309,6 +354,33 @@ export class FreeMode {
     return true
   }
 
+  /** 是否躲在櫃子裡（含進出途中） */
+  isHiding(slot) {
+    return !!this.states[slot]?.hide
+  }
+
+  /**
+   * 躲進櫃子（HideSpot）：開門 → 走到門前 → 走進去 → 轉身面向門外 → 關門；正在自由移動、能行動時才可以
+   * @returns {boolean} 有沒有開始躲
+   */
+  hideIn(slot, spot) {
+    const fighter = this.fighters[slot]
+    const st = this.states[slot]
+    if (!this.isActive || !fighter || st.sit || st.hide || st.isEngine || !fighter.canAct || !spot?.isLoaded) return false
+    spot.openDoor()
+    st.hide = { spot, phase: 'approach', t: 0, from: null }
+    return true
+  }
+
+  /** 從櫃子出來：躲好之後才可以（進去途中按無效）；開門 → 走出來 → 交還給自由移動（門自己關上） */
+  leaveHide(slot) {
+    const st = this.states[slot]
+    if (st?.hide?.phase !== 'hidden') return false
+    st.hide.spot.openDoor()
+    st.hide.phase = 'open'
+    return true
+  }
+
   /** Esc：立刻取消所有出拳、招式、吸附、凍結；位置與面向保留，回到站立、交還給自由移動 */
   cancelAll() {
     if (!this.isActive) return
@@ -323,6 +395,7 @@ export class FreeMode {
       model.scale.x = Math.abs(model.scale.x)
       this.states[slot].isEngine = false
       this.states[slot].sit = null
+      this._cancelHide(fighter, this.states[slot])
     })
     this.accumulator = 0
   }
@@ -346,6 +419,11 @@ export class FreeMode {
       if (st.sit && !fighter.canAct) st.sit = null // 坐著被打中：中斷坐下，交給格鬥邏輯
       if (st.sit) {
         raws[slot] = this._updateSit(slot, fighter, st, delta)
+        return
+      }
+      if (st.hide && !fighter.canAct) this._cancelHide(fighter, st) // 躲著被打中：中斷，交給格鬥邏輯
+      if (st.hide) {
+        raws[slot] = this._updateHide(slot, fighter, st, delta)
         return
       }
       raws[slot] = ai[slot] ? this._prepareAI(fighter, st, delta) : this._preparePlayer(slot, fighter, st, pressed)
@@ -377,6 +455,11 @@ export class FreeMode {
     this.space.resolvePush(Object.values(this.fighters), {})
     // 地面跟著場景高低（在地上的人）；走出平台邊緣就落下
     Object.values(this.fighters).forEach(f => this._followGround(f))
+    // 卡進模型就推出來（還是卡著就放回安全位置）；邏輯幀之後的這些移動同步到補間記錄，渲染後才不會被蓋回去
+    Object.entries(this.fighters).forEach(([slot, f]) => {
+      if (!this.states[slot].hide) this._unstick(f, this.states[slot], delta) // 躲櫃子時位置由走位控制（人在櫃子裡）
+      f.syncCapturedPosition()
+    })
 
     // 推擠框跟著人物（腳底橢圓、除錯顯示也用它）
     Object.values(this.fighters).forEach(f => {
@@ -393,12 +476,50 @@ export class FreeMode {
     this.interpolated = Object.entries(this.fighters).filter(([slot]) => this.states[slot].isEngine).map(([, f]) => f)
     this.interpolated.forEach(f => f.applyInterpolation(alpha))
     if (this.isFirstPerson) this._placeFirstPersonCamera()
+    else this._clampCameraToFloor()
+  }
+
+  /**
+   * 第三人稱鏡頭往下壓到地面以下（從下往上看）：
+   * - 沿著鏡頭 → 注視點的方向往人物拉近，停在地面上方 cameraFloorGap
+   * - 拉到 cameraFloorMinDist 還不夠：鏡頭停在地面上這個距離，視線改成往上抬（抬的角度同原本鏡頭往上看的角度）
+   * 只影響這個畫面（restoreFrames 還原鏡頭與注視點），鏡頭原本的距離不變，抬回來就恢復
+   */
+  _clampCameraToFloor() {
+    this.floorClamp = null
+    const minY = this.cameraGroundY + this.cameraFloorGap
+    const pos = this.camera.position
+    const target = this.controls.target
+    if (pos.y >= minY || target.y <= minY) return
+    this.floorClamp = { pos: pos.clone(), target: target.clone() }
+    const offset = pos.clone().sub(target)
+    const r = offset.length()
+    const t = (minY - target.y) / (pos.y - target.y) // 0 ~ 1：從注視點往鏡頭走到這個比例剛好在 minY
+    if (r * t >= this.cameraFloorMinDist) {
+      pos.lerpVectors(target, this.floorClamp.pos, t)
+      return
+    }
+    // 貼地、離人物 cameraFloorMinDist：水平方向同原本的鏡頭
+    const dy = target.y - minY
+    const flat = Math.sqrt(Math.max(0, this.cameraFloorMinDist ** 2 - dy * dy))
+    const side = offset.setY(0).lengthSq() > 1e-8 ? offset.normalize() : new THREE.Vector3(0, 0, 1)
+    pos.set(target.x + side.x * flat, minY, target.z + side.z * flat)
+    // 視線往上抬：原本鏡頭看注視點往上的角度（比看人物需要的角度大才抬）
+    const wantUp = Math.asin(THREE.MathUtils.clamp((target.y - this.floorClamp.pos.y) / r, -1, 1))
+    const up = Math.max(Math.atan2(dy, flat), wantUp)
+    const look = new THREE.Vector3(-side.x * Math.cos(up), Math.sin(up), -side.z * Math.cos(up))
+    target.copy(pos).addScaledVector(look, r)
   }
 
   /** 渲染後：還原成邏輯幀的姿勢；第一人稱縮掉的頭還原 */
   restoreFrames() {
     this.interpolated.forEach(f => f.restoreFrame())
     this.interpolated = []
+    if (this.floorClamp) {
+      this.camera.position.copy(this.floorClamp.pos)
+      this.controls.target.copy(this.floorClamp.target)
+    }
+    this.floorClamp = null
     this.hiddenHead?.setHeadHidden(false)
     this.hiddenHead = null
   }
@@ -410,6 +531,7 @@ export class FreeMode {
   _placeFirstPersonCamera() {
     const fighter = this.fighters[this.followSlot]
     if (!fighter) return
+    const blend = this.fpBlend?.isIn ? this.fpBlend : null
     const { eyeUp, eyeForward, eyeRate } = this.firstPerson
     const fp = this.fp
     fighter.model.updateMatrixWorld(true)
@@ -417,12 +539,43 @@ export class FreeMode {
     if (eye) eye.y += eyeUp
     const pos = eye ?? fighter.model.position.clone().setY(fighter.model.position.y + fighter.characterHeight * eyeRate)
     pos.addScaledVector(this._getYawDir(), eyeForward)
-    const look = new THREE.Vector3(Math.sin(fp.yaw) * Math.cos(fp.pitch), Math.sin(fp.pitch), Math.cos(fp.yaw) * Math.cos(fp.pitch))
-    this.camera.position.copy(pos)
-    this.controls.target.copy(pos).add(look)
-    this.camera.lookAt(this.controls.target)
+    const pitch = fp.pitch + this._getDeathRise(fighter) // 倒地不起的最後幾幀視角往上抬
+    const look = new THREE.Vector3(Math.sin(fp.yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(fp.yaw) * Math.cos(pitch))
+    const target = pos.clone().add(look)
+    if (blend) {
+      // 切換中：從開始時的鏡頭往眼睛移過去；到位前 headHideLead 秒就先藏頭
+      const k = smoothStep(blend.t)
+      this.camera.position.lerpVectors(blend.fromPos, pos, k)
+      this.controls.target.lerpVectors(blend.fromTarget, target, k)
+      this.camera.lookAt(this.controls.target)
+      const { transition, headHideLead } = this.firstPerson
+      const remain = (1 - blend.t) * transition // 還要幾秒到位
+      if (blend.t >= 1) this.fpBlend = null
+      else if (remain > headHideLead) return
+    } else {
+      this.camera.position.copy(pos)
+      this.controls.target.copy(target)
+      this.camera.lookAt(target)
+    }
     fighter.setHeadHidden(true)
     this.hiddenHead = fighter
+  }
+
+  /**
+   * 回第三人稱的過渡：注視點跟著人物（同一般第三人稱），鏡頭從眼睛移到人物背後的目標位置；滑鼠轉的是目標位置
+   * 過渡完 fpBlend 清掉，之後照一般第三人稱（鏡頭相對注視點的位置就是目標位置）
+   */
+  _updateLeaveFirstPerson(fighter, dx, dy, delta) {
+    const blend = this.fpBlend
+    blend.t = Math.min(1, blend.t + delta / this.firstPerson.transition)
+    blend.offset = this._rotateOffset(blend.offset, dx, dy)
+    this.cameraGroundY += (fighter.groundY - this.cameraGroundY) * Math.min(1, delta * this.floor.cameraSpeed)
+    const aim = fighter.model.position.clone().setY(this.cameraGroundY + this.followHeight)
+    const k = smoothStep(blend.t)
+    this.camera.position.lerpVectors(blend.fromPos, aim.clone().add(blend.offset), k)
+    this.controls.target.lerpVectors(blend.fromTarget, aim, k)
+    this.camera.lookAt(this.controls.target)
+    if (blend.t >= 1) this.fpBlend = null
   }
 
   // internal
@@ -542,23 +695,18 @@ export class FreeMode {
   /** 看得到對手：在面向左右各 angle 度、range 公尺內，視線高度往對手發射線沒被場景擋住 */
   _canSee(fighter) {
     const other = this._getOpponent(fighter)
-    if (other.isDying) return false
+    if (other.isDying || other.isHidden) return false // 躲在櫃子裡看不到
     const { angle, range, eyeHeight } = this.aiSight
     const from = fighter.model.position
     const toOther = other.model.position.clone().sub(from).setY(0)
     const dist = toOther.length()
     if (dist > range) return false
     if (dist > 1e-4 && this._getFacingDir(fighter).dot(toOther) / dist < Math.cos(THREE.MathUtils.degToRad(angle))) return false
-    if (!this.env) return true
-    const eye = this.origin.set(from.x, from.y + eyeHeight, from.z)
+    const eye = from.clone()
+    eye.y += eyeHeight
     const target = other.model.position.clone()
     target.y += eyeHeight
-    const dir = target.sub(eye)
-    const length = dir.length()
-    if (length < 1e-4) return true
-    this.raycaster.far = length
-    this.raycaster.set(eye, dir.divideScalar(length))
-    return !this.raycaster.intersectObject(this.env, true).some(item => item.object.visible)
+    return this.terrain.hasLineOfSight(eye, target)
   }
 
   /** 格鬥模式的 AI：能自由行動時先轉向對手，對手換算到自己的方向上（x = 在自己 +x 上的距離） */
@@ -629,6 +777,85 @@ export class FreeMode {
     fighter.vx += (speed - fighter.vx) * (1 - Math.exp(-accel * delta))
   }
 
+  /**
+   * 躲櫃子中（每個畫面）：不能移動、出招；依階段走位、轉身，等門開好 / 關好
+   * approach 走到門前 → enter 走進去 → turn 轉身面向門外 → close 關門 → hidden 躲好；open 開門 → exit 走出來 → 結束
+   */
+  _updateHide(slot, fighter, st, delta) {
+    const pending = this.combat.input[slot]
+    pending.pendingAttack = null
+    pending.rushLife = 0
+    fighter.isGuarding = false
+    const h = st.hide
+    const spot = h.spot
+    const pos = fighter.model.position
+    const { walkSpeed, turnTime } = this.hide
+    const outYaw = Math.atan2(spot.frontDir.x, spot.frontDir.z) // 面向門外
+    // 進到櫃子裡（轉身、關門、躲著、等開門）站著用 hide.idleAnim，門外等門開用一般 idle；走路時下面換成 walk
+    const isInside = ['turn', 'close', 'hidden', 'open'].includes(h.phase)
+    let anim = isInside && fighter.actions[this.hide.idleAnim] ? this.hide.idleAnim : 'idle'
+    // 往 goal 走：面向走的方向，到了回傳 true
+    const walkTo = (goal, faceYaw = null) => {
+      const to = goal.clone().sub(pos).setY(0)
+      const dist = to.length()
+      const step = walkSpeed * delta
+      if (dist <= step || dist < 1e-3) {
+        pos.x = goal.x
+        pos.z = goal.z
+        return true
+      }
+      pos.addScaledVector(to.divideScalar(dist), step)
+      fighter.model.rotation.y = faceYaw ?? Math.atan2(to.x, to.z)
+      anim = 'walk'
+      return false
+    }
+
+    if (h.phase === 'approach') {
+      if (walkTo(spot.frontPoint)) h.phase = 'enter'
+    } else if (h.phase === 'enter') {
+      // 門開好才走進去
+      if (spot.isDoorOpen && walkTo(spot.insidePoint)) {
+        h.phase = 'turn'
+        h.t = 0
+        h.from = fighter.model.rotation.y
+      }
+    } else if (h.phase === 'turn') {
+      h.t = Math.min(1, h.t + delta / turnTime)
+      const diff = Math.atan2(Math.sin(outYaw - h.from), Math.cos(outYaw - h.from))
+      fighter.model.rotation.y = h.from + diff * h.t
+      if (h.t >= 1) {
+        spot.closeDoor()
+        h.phase = 'close'
+      }
+    } else if (h.phase === 'close') {
+      if (spot.isDoorClosed) {
+        h.phase = 'hidden'
+        fighter.isHidden = true
+      }
+    } else if (h.phase === 'open') {
+      fighter.isHidden = false
+      if (spot.isDoorOpen) h.phase = 'exit'
+    } else if (h.phase === 'exit') {
+      if (walkTo(spot.frontPoint, outYaw)) {
+        spot.closeDoor()
+        st.hide = null
+      }
+    }
+    fighter.model.scale.x = Math.abs(fighter.model.scale.x)
+    fighter.playLoop(anim)
+    fighter.mixer.update(delta)
+    fighter.updateEffects(delta)
+    return { move: 0 }
+  }
+
+  /** 躲藏中斷（被打中、Esc、離開自由模式）：看得到了，門關上 */
+  _cancelHide(fighter, st) {
+    if (!st.hide) return
+    st.hide.spot.closeDoor()
+    st.hide = null
+    fighter.isHidden = false
+  }
+
   /** 坐下中：不能移動、出招（按的鍵丟掉）；坐下 / 起身的動作播完才換下一段 */
   _updateSit(slot, fighter, st, delta) {
     const pending = this.combat.input[slot]
@@ -670,7 +897,7 @@ export class FreeMode {
       const isSprint = forward > 0.5 && !!keys.sprint && pressed.has(keys.sprint)
       const { back, side } = this.firstPerson
       const rate = forward > 0.5 ? (isSprint ? this.sprintRate : 1) : forward < -0.5 ? back : side
-      const step = this._collide(model.position, this.step.copy(dir).multiplyScalar(this.runSpeed * rate * delta))
+      const step = this.terrain.collide(model.position, this.step.copy(dir).multiplyScalar(this.runSpeed * rate * delta))
       model.position.add(step)
       anim = forward > 0.5 ? this._getRunKey(fighter, isSprint) : forward < -0.5 ? 'walkBack' : 'walk'
     }
@@ -712,7 +939,7 @@ export class FreeMode {
 
     const step = st.dir.clone().multiplyScalar(dx)
     const length = step.length()
-    if (isCollide) this._collide(model.position, step)
+    if (isCollide) this.terrain.collide(model.position, step)
     model.position.add(step)
     return step.length() < length - 1e-6
   }
@@ -724,6 +951,12 @@ export class FreeMode {
   _updateCamera(delta) {
     const smooth = t => t * t * (3 - 2 * t)
     const fighter = this.fighters[this.followSlot]
+    // 鏡頭由別人控制中（環繞鏡頭）：滑鼠的移動丟掉，鏡頭不動
+    if (this.isCameraHeld?.()) {
+      this.look.dx = 0
+      this.look.dy = 0
+      return
+    }
     const { dx, dy } = this.look
     this.look.dx = 0
     this.look.dy = 0
@@ -731,7 +964,12 @@ export class FreeMode {
     const turn = this.attackerTurn
     if (turn && (Math.abs(dx) > 2 || (turn.time -= delta) <= 0)) this.attackerTurn = null
     if (this.isFirstPerson) {
+      if (this.fpBlend?.isIn) this.fpBlend.t = Math.min(1, this.fpBlend.t + delta / this.firstPerson.transition)
       this._updateFirstPersonCamera(fighter, dx, dy, delta)
+      return
+    }
+    if (this.fpBlend) {
+      this._updateLeaveFirstPerson(fighter, dx, dy, delta)
       return
     }
     // 注視點高度跟著地面（平滑跟上，台階不會跳一下；跳躍不跟）
@@ -787,6 +1025,18 @@ export class FreeMode {
       fp.yaw -= dx * this.lookSpeed
     }
     fp.pitch = THREE.MathUtils.clamp(fp.pitch - dy * this.lookSpeed, -maxPitch, maxPitch)
+  }
+
+  /**
+   * 倒地不起（死亡動畫）的視角抬升（弧度）：最後 deathRise.frames 幀從 0 平滑加到 deathRise.deg，停在最後一幀時維持
+   * 依動畫播到第幾幀直接算（不是每幀累加，畫面更新率怎麼變都一樣），疊在 fp.pitch 上、不改它
+   */
+  _getDeathRise(fighter) {
+    if (!fighter.isDying) return 0
+    const { frames, deg } = this.firstPerson.deathRise
+    const left = fighter.stateLength - 1 - fighter.stateFrame // 離最後一幀還有幾幀
+    const t = THREE.MathUtils.clamp(1 - left / frames, 0, 1)
+    return THREE.MathUtils.degToRad(deg) * smoothStep(t)
   }
 
   /**
@@ -867,37 +1117,51 @@ export class FreeMode {
     model.rotation.y += diff * Math.min(1, delta * this.turnSpeed)
     model.scale.x = Math.abs(model.scale.x)
 
-    const step = this._collide(model.position, this.step.copy(dir).multiplyScalar(this.runSpeed * speedRate * delta))
+    const step = this.terrain.collide(model.position, this.step.copy(dir).multiplyScalar(this.runSpeed * speedRate * delta))
     model.position.add(step)
     return step.lengthSq() > 0
   }
 
   /**
-   * 碰到牆：去掉朝牆的分量（沿牆滑開）；滑開後還是撞到就停住
-   * 走到場景邊緣（前方沒有地面）：只保留 x 或 z 其中一個方向（沿著邊緣滑），都不行就停住
-   * 會直接改 step 並回傳
+   * 卡進模型：膠囊體推出；推完還卡著（重疊超過 unstick.depth）連續 unstick.time 秒 → 放回最後一個安全位置
+   * 沒卡著而且站在地上時，每 unstick.saveEvery 秒記一次安全位置
    */
-  _collide(pos, step) {
-    this._slideWall(pos, step)
-    if (this._hasGround(pos, step)) return step
-    const alongX = new THREE.Vector3(step.x, 0, 0)
-    const alongZ = new THREE.Vector3(0, 0, step.z)
-    if (this._hasGround(pos, alongX) && !this._castWall(pos, alongX)) return step.copy(alongX)
-    if (this._hasGround(pos, alongZ) && !this._castWall(pos, alongZ)) return step.copy(alongZ)
-    return step.set(0, 0, 0)
-  }
-
-  /**
-   * 腳下地板的世界高度：從 pos（腳底）上方 stepUp 往下找場景，第一個碰到的面
-   * 沒有場景 = 0；找不到 = null
-   */
-  _getFloor(pos) {
-    if (!this.env) return 0
-    const { stepUp, far } = this.floor
-    this.raycaster.far = far
-    this.raycaster.set(this.origin.set(pos.x, pos.y + stepUp, pos.z), DOWN)
-    const hit = this.raycaster.intersectObject(this.env, true).find(item => item.object.visible)
-    return hit ? hit.point.y : null
+  _unstick(fighter, st, delta) {
+    const pos = fighter.model.position
+    const terrain = this.terrain
+    // 1. 穿牆：上一個畫面的位置 → 現在，中間有牆就停在牆前（擋牆半徑外）
+    if (st.lastPos) {
+      const move = pos.clone().sub(st.lastPos).setY(0)
+      const length = move.length()
+      const hit = length > 1e-4 ? terrain.castWall(st.lastPos, move) : null
+      if (hit && hit.distance < length) {
+        const allowed = Math.max(0, hit.distance - terrain.radius)
+        pos.x = st.lastPos.x + (move.x / length) * allowed
+        pos.z = st.lastPos.z + (move.z / length) * allowed
+      }
+    }
+    // 2. 膠囊體推出
+    const { depth } = terrain.depenetrate(pos, { height: fighter.characterHeight })
+    // 3. 還是卡著，或站在地上卻找不到地板（空心的模型裡面）
+    const isLost = !!terrain.env && !fighter.isAirborne && terrain.getFloor(pos.clone().setY(fighter.groundY)) == null
+    const { depth: maxDepth, time, saveEvery } = this.unstick
+    if (depth > maxDepth || isLost) {
+      st.stuckTime += delta
+      st.lastPos = pos.clone()
+      if (st.stuckTime < time || !st.safe) return
+      // 放回安全位置：站在那個地面上（空中的話從那裡往下落）
+      pos.copy(st.safe.pos)
+      fighter.groundY = st.safe.groundY
+      st.stuckTime = 0
+      st.lastPos = pos.clone()
+      return
+    }
+    st.lastPos = pos.clone()
+    st.stuckTime = 0
+    st.safeTimer -= delta
+    if (fighter.isAirborne || st.safeTimer > 0) return
+    st.safe = { pos: pos.clone().setY(fighter.groundY), groundY: fighter.groundY }
+    st.safeTimer = saveEvery
   }
 
   /**
@@ -907,7 +1171,7 @@ export class FreeMode {
   _followGround(fighter, isSnap = false) {
     if (fighter.isAirborne) return
     const pos = fighter.model.position.clone().setY(fighter.groundY)
-    const floor = this._getFloor(pos)
+    const floor = this.terrain.getFloor(pos)
     if (floor == null) return
     if (!isSnap && floor < fighter.groundY - this.floor.stepDown) {
       fighter.startFall()
@@ -917,55 +1181,11 @@ export class FreeMode {
     fighter.groundY = floor
     fighter.y = y
   }
+}
 
-  /** 撞牆：去掉朝牆的分量；滑開後還是撞到就停住 */
-  _slideWall(pos, step) {
-    const hit = this._castWall(pos, step)
-    if (!hit) return step
-    this.normal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld).setY(0)
-    if (this.normal.lengthSq() < 1e-6) return step.set(0, 0, 0)
-    this.normal.normalize()
-    const into = step.dot(this.normal)
-    if (into < 0) step.addScaledVector(this.normal, -into)
-    return this._castWall(pos, step) ? step.set(0, 0, 0) : step
-  }
-
-  /** 走完這一步（再往前擋牆半徑）的位置，往下找得到場景模型 = 還在場景內；沒有場景時看是否在 bounds 方框內 */
-  _hasGround(pos, step) {
-    const length = step.length()
-    if (length === 0) return true
-    const at = pos.clone().add(step).addScaledVector(step, this.radius / length)
-    if (!this.env) return this.bounds == null || (Math.abs(at.x) <= this.bounds && Math.abs(at.z) <= this.bounds)
-    const { from, length: far } = this.groundRay
-    this.raycaster.far = far
-    this.raycaster.set(this.origin.set(at.x, pos.y + from, at.z), DOWN)
-    return this.raycaster.intersectObject(this.env, true).some(item => item.object.visible)
-  }
-
-  /** 從人物各個高度往移動方向發射線，距離 = 這一步 + 擋牆半徑；回傳最近的命中 */
-  _castWall(pos, step) {
-    const length = step.length()
-    if (!this.env || length === 0) return null
-    const dir = step.clone().divideScalar(length)
-    this.raycaster.far = length + this.radius
-    let nearest = null
-    this.rayHeights.forEach(h => {
-      this.raycaster.set(this.origin.set(pos.x, pos.y + h, pos.z), dir) // 高度從腳底算（站在平台上、跳起來時跟著）
-      const hit = this.raycaster.intersectObject(this.env, true).find(item => item.object.visible && item.face)
-      if (hit && (!nearest || hit.distance < nearest.distance)) nearest = hit
-    })
-    return nearest
-  }
-
-  /** 場景網格建 BVH 加速射線（已建過的跳過） */
-  _buildBVH(env) {
-    env.updateMatrixWorld(true)
-    env.traverse(obj => {
-      if (!obj.isMesh || obj.isSkinnedMesh || obj.geometry.boundsTree) return
-      obj.geometry.boundsTree = new MeshBVH(obj.geometry)
-      obj.raycast = acceleratedRaycast
-    })
-  }
+/** 先慢、中間快、再慢 */
+function smoothStep(t) {
+  return t * t * (3 - 2 * t)
 }
 
 /**
@@ -1005,7 +1225,7 @@ class PlaneSpace {
   }
 
   moveBy(fighter, step) {
-    fighter.model.position.add(this.fm._collide(fighter.model.position, step))
+    fighter.model.position.add(this.fm.terrain.collide(fighter.model.position, step))
   }
 
   clampPassEnd() {}
@@ -1047,8 +1267,8 @@ class PlaneSpace {
     if (dir.lengthSq() < 1e-8) return
     dir.normalize()
     const fm = this.fm
-    const hit = fm._castWall(target.model.position, dir.clone().multiplyScalar(distance))
-    const room = hit ? Math.max(0, hit.distance - fm.radius) : distance
+    const hit = fm.terrain.castWall(target.model.position, dir.clone().multiplyScalar(distance))
+    const room = hit ? Math.max(0, hit.distance - fm.terrain.radius) : distance
     if (distance <= room) return
     // 攻擊方的格鬥邏輯 +x = 自己的 st.dir：往「離開對手」的方向退
     const st = fm.states[Object.keys(fm.fighters).find(slot => fm.fighters[slot] === attacker)]
@@ -1066,7 +1286,7 @@ class PlaneSpace {
     if (dist >= min) return
     const normal = dist > 1e-4 ? delta.divideScalar(dist) : this.fm._getFacingDir(a)
     const overlap = min - dist
-    a.model.position.add(this.fm._collide(a.model.position, normal.clone().multiplyScalar(-overlap * rateA)))
-    b.model.position.add(this.fm._collide(b.model.position, normal.clone().multiplyScalar(overlap * (1 - rateA))))
+    a.model.position.add(this.fm.terrain.collide(a.model.position, normal.clone().multiplyScalar(-overlap * rateA)))
+    b.model.position.add(this.fm.terrain.collide(b.model.position, normal.clone().multiplyScalar(overlap * (1 - rateA))))
   }
 }

@@ -49,8 +49,8 @@ export class Fisheye {
       renderer: null,
       scene: null,
       camera: null,
-      fov: 90, // 打開時的鏡頭垂直視角（度）
-      strength: 0.12, // 扭曲強度：0 = 沒有扭曲，越大邊緣彎越多（輕微約 0.1 ~ 0.2）
+      fov: 100, // 打開時的鏡頭垂直視角（度）
+      strength: 0.1, // 扭曲強度：0 = 沒有扭曲，越大邊緣彎越多（輕微約 0.1 ~ 0.2）
       blendTime: 0.3, // 打開 / 關閉的過渡秒數
     }
 
