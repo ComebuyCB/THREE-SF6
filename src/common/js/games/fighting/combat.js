@@ -602,7 +602,11 @@ export class Combat {
       // 吸附招式（lock）的第 1 下：不管對手在空中、飛走中，一律強制站立受擊，才能吸住打完整招
       const isForceStand = !!move.lock && !isLaunch && !this.lock
       const isAirHit = !isForceStand && target.isAirborne && !isLaunch && !target.isLaunched // 空中被普通攻擊打中：播飛走動畫、距離 = 擊退距離，被打的人在空中停一下
-      this.hitEffect.spawn(hitPoint, { type: move.isSuper || move.heavyHitEffect ? 'heavy' : 'hit', dir: hitDir })
+      // 絕招命中不頓幀，改成晃鏡頭
+      const hitstop = move.isSuper ? 0 : Math.round((move.hitstop ?? this.hitstopFrames) * stopRate)
+      // 招式可以指定特效（hitEffect）；hitEffectDelay = 頓幀結束後再過幾幀才亮（例如等慢動作開始，打擊感更強）
+      const effectDelay = move.hitEffectDelay != null ? (hitstop + move.hitEffectDelay) / 60 : 0
+      this.hitEffect.spawn(hitPoint, { type: move.hitEffect ?? (move.isSuper || move.heavyHitEffect ? 'heavy' : 'hit'), dir: hitDir, delay: effectDelay })
       this.space.prepareTarget(target, attacker)
       this.space.run(target, () => target.takeHit(this.space.localX(target, attacker), move, isLaunch, isForceStand), false)
       attacker.onHitConfirm() // 衝刺取消、收招縮短、下一拳鏡像：防禦住的不算
@@ -610,8 +614,7 @@ export class Combat {
       this._applyGauges(attacker, target, false)
       if (!isLaunch) this.space.cornerPush(attacker, target, move) // 對手背貼牆退不了：攻擊方往後退（含飛走中被追打）
       this.sound.play(move.isSuper ? 'superHit' : 'hit') // 受擊確認：受擊硬直第一幀
-      // 絕招命中不頓幀，改成晃鏡頭
-      this.hitstop = move.isSuper ? 0 : Math.round((move.hitstop ?? this.hitstopFrames) * stopRate)
+      this.hitstop = hitstop
       this.hooks.onHit?.(attacker, target, { move, isLaunch, isBlock: false, hitstop: this.hitstop })
 
       if (move.lock && !isLaunch && !this.lock) {

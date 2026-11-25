@@ -100,6 +100,20 @@ export class Environment {
     return group
   }
 
+  /**
+   * 把物件從目前場景的清單拿出來：換場景時不會被刪掉，還留在畫面上（例如傳送時先留著舊營火，新營火好了再刪）
+   * 拿出來的物件之後要自己 update、dispose
+   */
+  detachProp(prop) {
+    this.props = this.props.filter(p => p !== prop)
+  }
+
+  /** 先在背景載入場景模型（不切換）；之後 setScene 直接用快取 */
+  preload(name) {
+    const entry = this.scenes[name]
+    if (entry?.model) this.cache[name] ??= this._load(name, entry)
+  }
+
   /** 場景模型的擺放：水平轉動（度，繞場地中心）、位移、大小（只給要改的欄位） */
   setTransform(transform) {
     Object.assign(this.transform, transform)
@@ -207,7 +221,7 @@ export class Environment {
    * 載入場景模型：外層 Group 管擺放，內層把地面平面轉平、往下移到 y = 0
    * @returns {Promise<THREE.Group | null>} 載入失敗回傳 null（之後再選一次會重新載入）
    */
-  async _load(name, { model, ground = [0, 0, 0] }) {
+  async _load(name, { model, ground = [0, 0, 0], emissive = {} }) {
     this.onLoadStart?.(name)
     try {
       const gltf = await new GLTFLoader().loadAsync(model, e => this.onProgress?.(e, name))
@@ -216,6 +230,9 @@ export class Environment {
         if (!obj.isMesh) return
         obj.receiveShadow = true
         ;[obj.material].flat().forEach(material => {
+          // emissive：名稱包含這個字的材質自己發光（例如天花板的燈片）
+          const key = Object.keys(emissive).find(k => material.name.includes(k))
+          if (key && material.emissive) material.emissive.set(emissive[key])
           this.onMaterial?.(material)
           this._patchLight(material)
         })

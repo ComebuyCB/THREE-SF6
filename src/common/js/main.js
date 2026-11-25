@@ -21,15 +21,16 @@ import { WEATHERS } from './engine/world/atmosphere.js'
 import { GameCore } from './engine/core/gameCore.js'
 import { OrbitCamera } from './engine/camera/orbitCamera.js'
 import { PointerLook } from './engine/input/pointerLook.js'
-import { brightenScene, getHipsPin, makeInPlace, speedUpClip, trimClip } from './engine/assets/clipTools.js'
+import { brightenScene, getHipsPin, makeInPlace, speedUpClip, trimClip, turnClip } from './engine/assets/clipTools.js'
 
 const MODEL_DIR = 'src/model'
-// 聲音依用途分資料夾：fight/hit 打擊、fight/superArt 絕招；weather 天氣、ambient 環境（之後加）
+// 聲音依用途分資料夾：fight/hit 打擊、fight/superArt 絕招、fight/drive 動力系統（DI）；ambient 環境、weather 天氣（之後加）
 const SOUND_DIR = 'src/sound'
 const FIGHT_HIT_SOUND_DIR = `${SOUND_DIR}/fight/hit`
 const FIGHT_SUPER_SOUND_DIR = `${SOUND_DIR}/fight/superArt`
+const FIGHT_DRIVE_SOUND_DIR = `${SOUND_DIR}/fight/drive`
 const AMBIENT_SOUND_DIR = `${SOUND_DIR}/ambient`
-const SUPER_ARTS = ['dog_bear', 'kick_ball', 'monkey_turn', 'shake_head', 'dodge_step', 'wind_step']
+const SUPER_ARTS = ['dog_bear', 'kick_ball', 'monkey_yarn', 'shake_head', 'dodge_step', 'wind_step']
 
 /**
  * FighterViewer：雙人對戰場景
@@ -64,6 +65,7 @@ class FighterViewer {
         fastRun: `${MODEL_DIR}/anims/normal/StandardRun.fbx`, // 自由模式的衝刺
         dash: `${MODEL_DIR}/anims/normal/Walking_dash.fbx`, // 衝刺（地面 / 空中 / 衝刺取消共用），後衝倒著播
         hit: `${MODEL_DIR}/anims/normal/HitTo.fbx`,
+        headHit: `${MODEL_DIR}/anims/normal/HeadHit.fbx`, // 被動力衝擊反擊（DI 打中出招中的對手）的受擊動作（招式的 hitAnim）
         light: `${MODEL_DIR}/anims/normal/Punching_L.fbx`,
         medium: `${MODEL_DIR}/anims/normal/Punching_M.fbx`,
         heavy: `${MODEL_DIR}/anims/normal/Punching_H.fbx`,
@@ -95,12 +97,17 @@ class FighterViewer {
       // 接在另一個動作後面播的動作：臀部水平位置固定在對齊目標的位置（動作 key → 目標 key），才不會偏離人物
       //   FlyingBack_Death 原檔的臀部回到 x 0、z 0，跟 FlyingBack 固定的位置不同，接上時人會跳開
       alignHipsAnims: { flyDeath: 'fly' },
+      // 動作某一段朝向偏掉時轉正：[[幀, 度], ...]（裁切後的遊戲幀，中間平滑過渡；正值 = 往人物左手邊轉），不改 FBX 檔
+      turnAnims: {
+        // 中段兩手在胸前繞線時身體偏向鏡頭約 65 度：轉回來面對對手，收招前回到原本的架式
+        monkey_yarn: [[6, 0], [45, 65], [120, 65], [150, 0]],
+      },
       // 裁掉動作開頭 start / 結尾 end 幾幀（遊戲幀），不改 FBX 檔；招式的 startup / recovery / hits 照裁切後的幀數
       trimAnims: {
         // Rokoko 匯出的絕招第 0 幀是 T 字形：裁掉 2 幀（= 30F 檔的第 0 幀），絕招停頓時才不會看到
         dog_bear: { start: 7, end: 10 }, // 開頭多裁 5 幀（招式幀數已跟著往前挪）
         kick_ball: { start: 2 },
-        monkey_turn: { start: 2 },
+        monkey_yarn: { start: 2 },
         shake_head: { start: 2 },
         dodge_step: { start: 2 }, // 第 2 次起從第 50 幀開始（2 + fighter.js firstPassDelay 48）
         wind_step: { start: 2, end: 20 },
@@ -108,9 +115,12 @@ class FighterViewer {
         medium: { start: 9 },
         heavy: { start: 9 },
         TC_HH: { start: 4 }, // 跟 heavy 同一個動作（前搖比 heavy 多 5 幀）
-        DI: { start: 6 }, // 裁到第 35 幀剛好踢到
+        DI: { start: 6 }, // 裁到第 36 幀（攻擊判定第 1 幀）附近踢到
         TC_HHH: { start: 22 }, // 迴旋踢前的準備動作：裁到第 20 幀剛好踢到
         block: { start: 3 }, // 防禦動作
+        // 被動力衝擊反擊的受擊（共 86 幀）：0 ~ 1 靜止、2 ~ 11 頭往後甩、12 ~ 44 身體往下垮到最低點、44 ~ 68 站回來、68 ~ 86 站好
+        // 之後接倒地，留到最低點（第 44 幀）就好，不然會先站回來再倒下去；受擊時間跟著裁切後的長度（crumple.delay 沒填）
+        headHit: { end: 42 },
         hit: { start: 6 }, // 受擊動作
         standUp: { start: 68, end: 12 }, // 起身（坐下時倒著播）：結尾跟 idle 接不太起來，裁掉最後 20 幀
       },
@@ -126,30 +136,43 @@ class FighterViewer {
       //   model 是 null = 沒有場景：只有影子地板與天空（自由模式限制在 ±halfWidth 的方框內）
       //   props = 放在場景裡的物件（世界座標，不跟 transform 移動）：
       //     { type: 'sit', url, position: [x, y, z], rotation（度）, scale, radius } 可以坐下的物件（sitSpot.js；自由模式靠近按 F）
+      //     sound = 物件的循環聲 { name（sounds 的名稱）, near, far }：離人物越近越大聲（營火：campfire）
+      //     warpTo = 坐下後傳送到哪個場景（四周變全黑 → 換場景，人物放到那裡營火前的相對位置 → 亮回來；見 _startWarp）
+      //       到達的營火：那個場景裡 warpTo 指回來的營火（互相連接），沒有就用第一個營火
       //     playFrames = 動畫只循環一段：正數 = 前幾幀、負數 = 後幾幀（營火：最後 40 幀）
       //     { type: 'hide', url, position, facing（門朝的方向，度）, height } 可以躲進去的物件（hideSpot.js；實心，F 躲藏 / 離開）
       //   place = '室外'（預設，影子跟著太陽、月亮）| '室內'（影子固定從上方照，不受時間天氣影響）
+      //   emissive = { 材質名稱（包含即可）: 顏色 } 這些材質自己發光（例如天花板的燈片）
+      //   view = { far, fogNear, fogFar } 這個場景看多遠（公尺）：鏡頭最遠畫到哪、地平線霧的範圍；沒填 = 預設（很大的戶外地圖才需要）
       scenes: {
         無: { model: null, halfWidth: 5 },
         庭院: { model: `${MODEL_DIR}/background/courtyard.glb`, ground: [0.0252, -0.0414, 0.6321], transform: { x: -0.3, y: -0.03, z: 4, rotation: 0, scale: 0.9 } },
         // 模型中央是房子與門口台階：往後移，人物站在房子前的空地，房子當背景
         閥門房: {
           model: `${MODEL_DIR}/background/bayard_station_valve_house.glb`, ground: [0.0013, -0.0167, 9.416], transform: { x: 1.5, y: -0.05, z: -8.1, rotation: 0, scale: 0.9 },
-          props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, playFrames: -40, position: [-4.5, 0, -2.5] }],
+          props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, sound: { name: 'campfire' }, warpTo: '後室', playFrames: -40, position: [33.5, -0.45, 6.6] }],
         },
         // 室內（天花板約 2.8 公尺）：模型裡 (-28, -1) 那塊大廳移到場地中心，打鬥線到鏡頭之間左右 7.5 公尺內沒有牆，背後牆約 3 公尺
         後室: {
           model: `${MODEL_DIR}/background/backrooms_vr.glb`, ground: [0, 0, -0.12], transform: { x: 28, y: 0, z: 1, rotation: 0, scale: 1 }, place: '室內',
           props: [
-            { type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, playFrames: -10, position: [28, 0, 2] },
+            { type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, sound: { name: 'campfire' }, playFrames: -10, position: [28, 0, 2] },
+            // 跟 PSX後室的營火互相連接（坐下傳送）
+            { type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, sound: { name: 'campfire' }, warpTo: 'PSX後室', playFrames: -40, position: [-21, 0, -2] },
             // 櫃子靠在打鬥場地後面的牆邊（牆約在 z = -3.3），門朝鏡頭（+z）
             { type: 'hide', url: `${MODEL_DIR}/items/locker_rough_texture.glb`, position: [3, 0, -2.9], facing: 0 },
           ],
         },
-        // 後室 2：另一張後室地圖（條紋 / 點點壁紙、地毯）；模型原點那塊就是空地：左右 8.8 公尺、前 13 公尺、背後牆 3.6 公尺
-        後室2: { model: `${MODEL_DIR}/background/backrooms_vr2.glb`, ground: [0, 0, 0.01], transform: { x: 0, y: 0, z: 0, rotation: 0, scale: 1 }, place: '室內' },
         // PSX 後室：PS1 風格的低面數後室；模型裡 (6, -22) 那塊移到場地中心：左右 9 公尺、前 16 公尺、背後牆 6 公尺，打鬥線到鏡頭之間沒有牆
-        PSX後室: { model: `${MODEL_DIR}/background/psx_-_backroom.glb`, ground: [0, 0, -0.34], transform: { x: -6, y: 0, z: 22, rotation: 0, scale: 1 }, place: '室內' },
+        PSX後室: {
+          model: `${MODEL_DIR}/background/psx_-_backroom.glb`, ground: [0, 0, -0.34], transform: { x: -6, y: 0, z: 22, rotation: 0, scale: 1 }, place: '室內',
+          // 跟後室 (-21, 0, -2) 的營火互相連接（坐下傳送）
+          props: [{ type: 'sit', url: `${MODEL_DIR}/items/animated_fire.glb`, sound: { name: 'campfire' }, warpTo: '後室', playFrames: -40, position: [3.5, 0, -23.5] }],
+        },
+        // Kane 後室（kane pixels）：原檔天花板 5.4 公尺，縮到 0.55 倍（約 3 公尺）；模型裡 (0, -39) 有燈的走道移到場地中心，打鬥線到鏡頭之間沒有牆
+        Kane後室: { model: `${MODEL_DIR}/background/backrooms_kane_pixels_map_asinc.glb`, ground: [0, 0, -0.19], transform: { x: 0, y: 0, z: 21.45, rotation: 0, scale: 0.55 }, place: '室內', view: { far: 200, fogNear: 40, fogFar: 180 }, emissive: { LIGHTZZZ: 0xfff6dc } },
+        // 雷尼爾山賽道（1.4 × 2.4 公里，比例 1:1）：模型裡 (150, -407) 加油站前的路口轉 45 度移到場地中心，背景是加油站；地圖很大，看遠一點
+        雷尼爾山: { model: `${MODEL_DIR}/background/gt_racing_2_-_mount_rainier.glb`, ground: [0, 0, 24.45], transform: { x: 181.7, y: 0, z: 393.9, rotation: 45, scale: 1 }, view: { far: 2500, fogNear: 150, fogFar: 1600 } },
       },
       // 天空（GUI 可切換）：procedural = 程式畫的動態天空（skyDome.js）；其餘是 2:1 全景圖，當作無限遠的背景，3D 場景沒擋住的地方看得到
       skies: {
@@ -198,12 +221,21 @@ class FighterViewer {
         shake_head_title: `${FIGHT_SUPER_SOUND_DIR}/shake_head_title.wav`,
         dodge_step_title: `${FIGHT_SUPER_SOUND_DIR}/dodge_step_title.wav`,
         wind_step_title: { url: `${FIGHT_SUPER_SOUND_DIR}/wind_step_title.wav`, volume: 0.8 },
-        // 環境（src/sound/ambient）：循環播放，音量跟著天氣（見 _updateWeatherSound）
+        // 格鬥：動力系統（src/sound/fight/drive）
+        DI: { url: `${FIGHT_DRIVE_SOUND_DIR}/DI.mp3`, volume: 0.2 },
+        // 環境（src/sound/ambient）：循環播放；雨聲跟著雨量、營火聲跟著離人物的距離（見 _updateAmbientSound）
         raining: `${AMBIENT_SOUND_DIR}/raining.wav`,
+        campfire: { url: `${AMBIENT_SOUND_DIR}/campfire.mp3`, volume: 0.7 },
         // 天氣（src/sound/weather）：之後加
       },
       // 天氣聲：音量變化的平滑秒數（雨量本身也會依天氣過渡慢慢變，兩個疊起來）
       weatherSoundFade: 1,
+      propSoundFade: 0.3, // 物件聲（營火）音量跟著距離變化的平滑秒數
+      // 營火傳送（營火設定 warpTo）：坐下後黑暗霧最遠 far 公尺 → 0 花 fadeOut 秒（全黑）→ 換場景；
+      // 載入完成、而且全黑至少 hold 秒後，0 → far 花 fadeIn 秒亮回來
+      sceneWarp: { fadeOut: 3, hold: 1, fadeIn: 3, far: 100 },
+      // 第一人稱時互動提示（F 坐下…）固定在螢幕上的位置（%）：準心下方，不跟著物件跑（物件提示在頂端上方，第一人稱時常常太高看不到）
+      firstPersonPrompt: { x: 50, y: 64 },
       knockdownSoundFrame: 35, // 被打飛後第幾幀播倒地音效（身體碰到地面的時間點）
       // 絕招演出（遊戲幀）：鏡頭拉近 → 停留 → 拉回（遊戲繼續）
       // 拉近 + 停留期間其他一切凍結，放招的人從招式的 animStart 開始播（招式幀數推進、但不做命中判定）
@@ -235,6 +267,11 @@ class FighterViewer {
       closeUp: { angle: 55, distance: 2.3, height: 0.5, lookY: 1, hold: 1.2, blendIn: 8, blendOut: 25 },
       // 打中放慢（招式的 slowMo）：遊戲速度 × rate，頓幀結束後持續 time 秒（真實時間），之後 fade 秒恢復
       slowMo: { rate: 0.25, time: 1, fade: 0.3 },
+      // 動力衝擊對撞（反 DI：用霸體擋下對手的 DI）的瞬間：鏡頭只往兩人中間拉近一些（距離 × rate），同時放慢（slowMo）
+      // 反 DI 打中後才切到特寫（closeUp）；沒打中就收招 / 被打斷時拉回。blendIn / blendOut = 拉近 / 拉回幀數（真實時間）
+      clashCamera: { rate: 0.75, blendIn: 12, blendOut: 20 },
+      // 反 DI 霸體擋下的放慢：頓幀結束後遊戲速度 × rate，只持續 frames 幀（放慢後的遊戲幀），之後直接恢復正常；反 DI 打中後才換成 slowMo
+      clashSlowMo: { rate: 0.75, frames: 8 },
       // 用 e.code 判斷，開著中文輸入法也能操作
       p1Keys: {
         left: 'KeyA',
@@ -248,7 +285,7 @@ class FighterViewer {
         di: 'Numpad6', // 動力衝擊（自由模式另有 R）
         // 絕招（SA）= 方向指令 + 攻擊鍵（moveSets.js 的 command）
         // 除錯：主鍵盤 4 ~ 9 直接出絕招（SG 照樣消耗）
-        debugSupers: { Digit4: 'dodge_step', Digit5: 'kick_ball', Digit6: 'wind_step', Digit7: 'dog_bear', Digit8: 'shake_head', Digit9: 'monkey_turn' },
+        debugSupers: { Digit4: 'dodge_step', Digit5: 'kick_ball', Digit6: 'wind_step', Digit7: 'dog_bear', Digit8: 'shake_head', Digit9: 'monkey_yarn' },
       },
       freeSupers: { KeyQ: 'dodge_step', KeyE: 'kick_ball' }, // 自由模式的絕招快捷鍵（方向指令 S → D / S → A 照常可以用）
       p2AttackKey: 'NumpadAdd', // 按著數字鍵盤 + 再按出招鍵 = P2 出招
@@ -316,6 +353,7 @@ class FighterViewer {
     this.returning = null // 自由 → 格鬥模式的過渡中：{ time, duration, items: [{ fighter, from, to, fromRot, toRot }], camFrom, camTo }
     this.hitCam = null // 命中鏡頭中：{ attacker, move, phase: 'in' / 'out', time, fromPos, fromTarget, base: { target, offset }, hold（特寫鏡頭才有） }
     this.slowTime = null // 打中放慢中：已經過幾秒（真實時間），null = 沒有放慢
+    this.slowCfg = null // 這次放慢的設定 { rate, time, fade }（秒，真實時間）；null = slowMo
     this.shake = null // 受擊搖晃中：{ fighters, time, duration（秒）, cycles, amplitude }
     this.accumulator = 0 // 尚未消化的時間，累積滿 1/60 秒就推進 1 幀
     this.superDim = 0 // 絕招演出的變暗程度（0 = 正常、1 = 暗到 dimLevel）
@@ -915,8 +953,21 @@ class FighterViewer {
     const { x = 0, y = 0, z = 0, rotation = 0, scale = 1 } = entry.transform || {}
     Object.assign(this.params, { envOffsetX: x, envOffsetY: y, envOffsetZ: z, envRotation: rotation, envScale: scale })
     this.stageMaxHalfWidth = entry.halfWidth ?? this.defaultHalfWidth
+    this._applySceneView(entry.view)
     this.activeProp = null
-    this.environment.setScene(name)
+    return this.environment.setScene(name) // 場景模型換好（沒有模型 / 失敗 / 中途又換 = null）
+  }
+
+  /** 場景看多遠：鏡頭最遠畫到哪、地平線霧的範圍（GUI 的霧也換成這個場景的值）；沒填的用預設 */
+  _applySceneView(view = {}) {
+    this.defaultView ??= { far: this.camera.far, fogNear: this.params.fogNear, fogFar: this.params.fogFar }
+    const { far, fogNear, fogFar } = { ...this.defaultView, ...view }
+    this.camera.far = far
+    this.camera.updateProjectionMatrix()
+    Object.assign(this.params, { fogNear, fogFar })
+    this.guiControllers?.fogNear.max(Math.max(60, fogNear * 2)).updateDisplay()
+    this.guiControllers?.fogFar.max(Math.max(100, fogFar * 2)).updateDisplay()
+    this._applySuperFog(this.superFogAmount ?? 0)
   }
 
   /**
@@ -956,11 +1007,24 @@ class FighterViewer {
     if (!isBusy) this.activeProp = null // 被打中等原因中斷了
     // 靠近的物件只亮最近的那一個（營火和櫃子靠在一起時不會兩個都亮）
     const near = isBusy ? null : this._getNearProp()
+    // 第一人稱（P1 視角）：提示固定在準心下方
+    const screen = fm.isActive && fm.isFirstPerson && fm.followSlot === 'p1' ? this.firstPersonPrompt : null
+    // 營火傳送換地圖中：不能起身，提示變灰、改成「移動中…」
+    const isWarpLocked = !!this.warp && this.warp.phase !== 'in'
+    const getFocus = (prop, isUsing, isActive) => {
+      const isDisabled = isUsing && isWarpLocked
+      const label = isDisabled ? prop.labels.warping ?? '' : prop.getLabel(isUsing)
+      return { isActive, label, camera: this.camera, screen, isDisabled }
+    }
     this.props.forEach(prop => {
       const isUsing = prop === this.activeProp
       const isActive = fm.isActive && !this.returning && !this.params.p1AI && (isUsing || prop === near)
-      prop.update(delta, { isActive, label: prop.getLabel(isUsing), camera: this.camera })
+      prop.setFogged(!(isUsing && prop.kind === 'sit')) // 只有正坐著的營火不被黑暗霧蓋住
+      prop.update(delta, getFocus(prop, isUsing, isActive))
     })
+    // 營火傳送時留著頂替的舊營火：火照樣動、照樣亮（新營火載好就刪掉）
+    const keep = this.warpKeep
+    if (keep) keep.update(delta, getFocus(keep, true, true))
   }
 
   /** P1 互動距離內、最近的物件 */
@@ -977,6 +1041,7 @@ class FighterViewer {
     const fm = this.freeMode
     if (!fm.isActive || this.params.p1AI) return
     if (fm.isSitting('p1')) {
+      if (this.warp && this.warp.phase !== 'in') return // 營火傳送：新場景載入完成前不能起身
       fm.standUp('p1')
       return
     }
@@ -987,7 +1052,105 @@ class FighterViewer {
     const prop = this._getNearProp()
     if (!prop) return
     const isStarted = prop.kind === 'hide' ? fm.hideIn('p1', prop) : fm.sitDown('p1', prop.worldPosition)
-    if (isStarted) this.activeProp = prop
+    if (!isStarted) return
+    this.activeProp = prop
+    if (prop.kind === 'sit' && prop.warpTo) this._startWarp(prop)
+  }
+
+  /**
+   * 營火傳送（營火設定 warpTo）：
+   * 1. out：黑暗霧近 0、遠 sceneWarp.far → 0（fadeOut 秒），四周慢慢變全黑；中途沒坐著了（被打中、離開自由模式）就不傳送，直接亮回來
+   * 2. load：換場景，載入完成後把人物放到新場景營火前（跟原本營火的相對位置一樣，朝向不變），坐著的營火換成新的那個
+   * 3. in：黑暗霧遠 0 → far（fadeIn 秒）亮回來，結束後還原 GUI 的黑暗霧設定；從這裡開始可以按 F 起身
+   */
+  _startWarp(prop) {
+    if (this.warp || !this.scenes[prop.warpTo]) return
+    const { darkFog, darkFogNear, darkFogFar, darkFogSky } = this.params
+    this.warp = { phase: 'out', dark: 0, hold: 0, isArrived: false, to: prop.warpTo, fromScene: this.params.scene, from: prop.worldPosition.clone(), saved: { darkFog, darkFogNear, darkFogFar, darkFogSky } }
+    this.environment.preload(prop.warpTo) // 變暗的時候先載入，全黑時換場景比較快
+    this._setWarpDark(0)
+  }
+
+  /** 每個畫面（真實時間）：黑暗程度往目標走，到了換下一段 */
+  _updateWarp(realDelta) {
+    const w = this.warp
+    if (!w) return
+    const { fadeOut, hold, fadeIn } = this.sceneWarp
+    if (w.phase === 'out') {
+      if (!this.freeMode.isActive || !this.freeMode.isSitting('p1')) {
+        w.phase = 'in'
+      } else {
+        w.dark = Math.min(1, w.dark + realDelta / fadeOut)
+        if (w.dark >= 1) {
+          w.phase = 'load'
+          this._warpScene(w)
+        }
+      }
+    } else if (w.phase === 'load') {
+      // 全黑至少 hold 秒，而且新場景到了才亮回來
+      w.hold += realDelta
+      if (w.isArrived && w.hold >= hold) w.phase = 'in'
+    } else if (w.phase === 'in') {
+      w.dark = Math.max(0, w.dark - realDelta / fadeIn)
+      if (w.dark <= 0) {
+        Object.assign(this.params, w.saved) // 還原 GUI 的黑暗霧設定
+        this._applyDarkFog()
+        this.warp = null
+        return
+      }
+    }
+    this._setWarpDark(w.dark)
+  }
+
+  /** 傳送的黑暗程度：0 = 黑暗霧最遠 sceneWarp.far 公尺、1 = 全黑（天空也一起變暗） */
+  _setWarpDark(dark) {
+    Object.assign(this.params, { darkFog: true, darkFogNear: 0, darkFogFar: this.sceneWarp.far * (1 - dark), darkFogSky: 1 })
+    this._applyDarkFog()
+  }
+
+  /** 換場景（全黑時）：載入完成後人物放到新場景營火前的相對位置，再亮回來 */
+  async _warpScene(w) {
+    const fighters = ['p1', 'p2'].filter(slot => this[slot])
+    const offsets = Object.fromEntries(fighters.map(slot => [slot, this[slot].model.position.clone().sub(w.from).setY(0)]))
+    // 坐著的營火先留著（換場景不刪）：新營火載好之前由它頂替，畫面上的營火不會不見一下
+    const keep = this.activeProp?.kind === 'sit' ? this.activeProp : null
+    if (keep) {
+      this.environment.detachProp(keep)
+      this.warpKeep = keep
+    }
+    await this.setScene(w.to)
+    if (this.warp !== w) {
+      this._dropWarpKeep()
+      return
+    }
+    // 到達的營火：指回原本場景的那個（互相連接），沒有就用第一個
+    const fires = this.props.filter(prop => prop.kind === 'sit')
+    const fire = fires.find(prop => prop.warpTo === w.fromScene) ?? fires[0]
+    if (fire && this.freeMode.isActive) {
+      const base = fire.worldPosition
+      fighters.forEach(slot => this.freeMode.teleport(slot, base.clone().add(offsets[slot]).setY(base.y)))
+      this.activeProp = fire // 坐在新的營火前：發亮、不被黑暗霧蓋住、F 起身
+      if (keep) {
+        // 舊營火移到新營火的位置頂替；新營火先藏著，載好了（發亮程度接著舊的）才換過去、刪掉舊的
+        keep.group.position.copy(fire.group.position)
+        fire.group.visible = false
+        fire.glowLevel = keep.glowLevel
+        fire.loading.then(() => {
+          if (this.warpKeep !== keep) return
+          fire.group.visible = true
+          this._dropWarpKeep()
+        })
+      }
+    } else {
+      this._dropWarpKeep()
+    }
+    w.isArrived = true
+  }
+
+  /** 傳送時留著的舊營火：刪掉 */
+  _dropWarpKeep() {
+    this.warpKeep?.dispose()
+    this.warpKeep = null
   }
 
   /** 實心的物件（櫃子）交給自由模式的地形當碰撞物件 */
@@ -1113,9 +1276,9 @@ class FighterViewer {
         getShadowFocus: () => this._getShadowFocus(),
         onSceneModel: (model, entry) => this._onSceneModel(model, entry),
         onPropsChange: () => this._syncPropColliders(),
-        onLoadStart: name => !this.isLoading && this._showLoading(true, name),
+        onLoadStart: name => !this.isLoading && !this.warp && this._showLoading(true, name), // 營火傳送中畫面是全黑的，不顯示載入畫面
         onProgress: (e, name) => this._onProgress(e, name),
-        onLoadEnd: () => !this.isLoading && this._showLoading(false),
+        onLoadEnd: () => !this.isLoading && !this.warp && this._showLoading(false),
       },
     })
     // 原本的名稱照用（main.js 其他地方不用改）
@@ -1266,6 +1429,8 @@ class FighterViewer {
         isCenterHips: this.centerHipsAnims.includes(key),
         pinTo: getHipsPin(clips[this.alignHipsAnims[key]]),
       })
+      const turn = this.turnAnims[key]
+      if (turn) clips[key] = turnClip(clips[key], turn, FPS)
     })
     return { scene: character.scene, clips }
   }
@@ -1297,8 +1462,8 @@ class FighterViewer {
       this.atmosphere.apply()
     })
     skyFolder.add(this.params, 'horizonFog').name('地平線霧').onChange(() => this._applySuperFog(this.superFogAmount))
-    skyFolder.add(this.params, 'fogNear', 0, 60, 1).name('霧開始（m）').onChange(() => this._applySuperFog(this.superFogAmount))
-    skyFolder.add(this.params, 'fogFar', 10, 100, 1).name('霧最濃（m）').onChange(() => this._applySuperFog(this.superFogAmount))
+    this.guiControllers.fogNear = skyFolder.add(this.params, 'fogNear', 0, 60, 1).name('霧開始（m）').onChange(() => this._applySuperFog(this.superFogAmount))
+    this.guiControllers.fogFar = skyFolder.add(this.params, 'fogFar', 10, 100, 1).name('霧最濃（m）').onChange(() => this._applySuperFog(this.superFogAmount))
     // 時間與天氣：時間 0 ~ 24 點（可以讓它自己流動）、天氣切換時平滑過渡
     const atmo = this.atmosphere
     const timeFolder = gui.addFolder('天氣與時間')
@@ -1425,9 +1590,13 @@ class FighterViewer {
     if (clash) {
       // 動力衝擊對撞：整段頓幀劇烈搖晃（雙方一起搖 + 晃鏡頭）
       this.cameraShaker.start(clash.camera, hitstop / FPS)
+      // 反 DI 的瞬間放慢（頓幀的劇烈搖晃結束後開始）：× clashSlowMo.rate 只持續 frames 幀，之後正常速度
+      const { rate, frames } = this.clashSlowMo
+      this.slowTime = -hitstop / FPS
+      this.slowCfg = { rate, time: frames / FPS / rate, fade: 0 }
       if (this.freeMode.isActive) return
       this._startShake([attacker, target], hitstop, clash.shakes, clash.amplitude)
-      this._startCloseUp(target, Infinity) // 用霸體接住的那一方是反制的人：特寫到他打中、或這招收招
+      this._startPushIn(target) // 用霸體接住的那一方是反制的人：鏡頭先拉近一些，他打中了才切到特寫（見下面 move.closeUp）
       return
     }
     if (isAbsorb && !this.freeMode.isActive) this._startShake(target, hitstop, 1) // 霸體擋下：輕輕震一下
@@ -1435,7 +1604,10 @@ class FighterViewer {
     this.cameraShaker.start(this._getCameraShake(attacker))
     const freeze = hitstop / FPS // 頓幀照原速，頓完才開始放慢；特寫也多停留這段
     const isFlying = target.state === 'down' // 打飛（站著、跳躍中被打中）：不放慢、不特寫
-    if (move.slowMo && !isFlying) this.slowTime = -freeze
+    if (move.slowMo && !isFlying) {
+      this.slowTime = -freeze
+      this.slowCfg = null // 用一般的 slowMo（反 DI 打中後 × 0.25）
+    }
     if (this.freeMode.isActive) return
     if (move.closeUp && !isFlying) this._startCloseUp(attacker, freeze + this.closeUp.hold)
     if (move.hitShake) this._startShake(target, hitstop, move.hitShake === true ? this.hitShake.cycles : move.hitShake)
@@ -1515,12 +1687,30 @@ class FighterViewer {
     const prev = this.hitCam
     if (this._isCinematicCamera()) return
     if (!prev) this._startHitCamera(fighter)
-    else if (prev.attacker !== fighter || prev.phase === 'out') {
+    else if (prev.attacker !== fighter || prev.phase === 'out' || prev.push != null) {
+      // 從別的鏡頭（另一個人的、拉回中、對撞的拉近）接過來：從目前的位置重新拉近
       prev.time = 0
       prev.fromPos = this.camera.position.clone()
       prev.fromTarget = this.controls.target.clone()
     }
-    Object.assign(this.hitCam, { attacker: fighter, move: fighter.currentMove, phase: 'in', cfg: this.closeUp, hold })
+    Object.assign(this.hitCam, { attacker: fighter, move: fighter.currentMove, phase: 'in', cfg: this.closeUp, hold, push: null })
+  }
+
+  /**
+   * 動力衝擊對撞（反 DI）的拉近：沿著目前一般鏡頭的方向往兩人中間拉近（距離 × clashCamera.rate），不是特寫
+   * 這招收招 / 被打斷就拉回；這招打中時由 _startCloseUp 接手（從目前位置拉到特寫）
+   */
+  _startPushIn(fighter) {
+    if (this._isCinematicCamera() || this.hitCam) return
+    this._startHitCamera(fighter)
+    Object.assign(this.hitCam, { cfg: this.clashCamera, push: this.clashCamera.rate })
+  }
+
+  /** 對撞拉近的位置：一般鏡頭的方向不變，注視點跟著兩人中點，距離 × push */
+  _getPushInPose(h) {
+    const target = h.base.target.clone()
+    target.x = (this.p1.x + this.p2.x) / 2
+    return { pos: target.clone().addScaledVector(h.base.offset, h.push), target }
   }
 
   /** 特寫鏡頭的位置：fighter 背後、往觀眾那側偏 angle 度，離地 height，看兩人中間 */
@@ -1741,8 +1931,13 @@ class FighterViewer {
     const { blendIn, blendOut } = h.cfg
     const f = h.attacker
     const isCloseUp = h.hold != null
+    const isPush = h.push != null
     const isAttacking = f.state === 'attack' && f.currentMove === h.move
-    if (isCloseUp) {
+    if (isPush) {
+      // 對撞拉近：用真實時間（放慢中鏡頭照常拉近）；這招收招、被打斷就拉回
+      h.time += (this._getGameDelta(1) > 0 ? realDelta : 0) * FPS
+      if (h.phase === 'in' && !isAttacking) this._releaseHitCamera()
+    } else if (isCloseUp) {
       // 特寫：用真實時間（暫停、選單時不動）；時間到、或等打中的途中收招 / 被打斷就拉回
       const dt = this._getGameDelta(1) > 0 ? realDelta : 0
       h.time += dt * FPS
@@ -1760,7 +1955,7 @@ class FighterViewer {
     let toTarget
     let k
     if (h.phase === 'in') {
-      ;({ pos: toPos, target: toTarget } = isCloseUp ? this._getCloseUpPose(f) : this._getHitCameraPose(f, h.cfg, h.distance))
+      ;({ pos: toPos, target: toTarget } = isPush ? this._getPushInPose(h) : isCloseUp ? this._getCloseUpPose(f) : this._getHitCameraPose(f, h.cfg, h.distance))
       k = easeOut(Math.min(1, h.time / blendIn))
     } else {
       toTarget = h.base.target.clone()
@@ -1987,6 +2182,7 @@ class FighterViewer {
    */
   _update(realDelta) {
     this._updateSlowMo(realDelta)
+    this._updateWarp(realDelta)
     if (this.cinematic && !this.isMenuOpen) this._updateCinematic(realDelta)
 
     const fighters = this.p1 && this.p2 ? [this.p1, this.p2] : []
@@ -2059,7 +2255,7 @@ class FighterViewer {
   /** 打中放慢的速度倍率：time 秒內 = rate，之後 fade 秒內恢復到 1 */
   _getSlowRate() {
     if (this.slowTime == null || this.slowTime < 0) return 1 // 負數 = 還在頓幀
-    const { rate, time, fade } = this.slowMo
+    const { rate, time, fade } = this.slowCfg ?? this.slowMo
     const k = fade > 0 ? Math.min(1, Math.max(0, (this.slowTime - time) / fade)) : Number(this.slowTime >= time)
     return rate + (1 - rate) * k
   }
@@ -2068,7 +2264,8 @@ class FighterViewer {
   _updateSlowMo(realDelta) {
     if (this.slowTime == null || this.params.paused || this.isMenuOpen) return
     this.slowTime += realDelta
-    if (this.slowTime >= this.slowMo.time + this.slowMo.fade) this.slowTime = null
+    const { time, fade } = this.slowCfg ?? this.slowMo
+    if (this.slowTime >= time + fade) this.slowTime = null
   }
 
   /** 渲染前（GameCore hooks.onBeforeRender）：HUD、霧的中心、人物的霧、互動物件、透視剪影 */
@@ -2081,24 +2278,45 @@ class FighterViewer {
     this.hud.updateGauges(this.combat.gauges)
     this.hud.updateComboDebug(this.combat.comboStats)
     this.hud.updateGameSpeed(this.params.timeScale, this.params.paused)
+    // 人物已經擺好這個畫面的姿勢，火花從骨頭位置噴出
+    ;[this.p1, this.p2].forEach(f => f?.updateAura(gameDelta))
     this._updateDarkFogCenter()
     this._updateFighterFog()
     this._updateProps(gameDelta)
     this._updateScreenTint()
     this._updateXray()
-    this._updateWeatherSound()
+    this._updateAmbientSound()
   }
 
   /**
-   * 天氣聲：雨聲的音量 = 雨量（雨量依天氣過渡慢慢變，所以開始下雨漸大聲、雨停漸小聲）
-   * 只在音量變了一點以上才更新（Sound.setLoop 每次會重新開始淡入淡出）
+   * 環境循環聲：
+   * - 雨聲的音量 = 雨量（雨量依天氣過渡慢慢變，所以開始下雨漸大聲、雨停漸小聲）
+   * - 物件的聲音（例如營火）：離人物越近越大聲（自由模式 = 鏡頭跟隨的人，格鬥模式 = P1）；同名的取最大聲的那個
    */
-  _updateWeatherSound() {
-    const level = this.atmosphere.rainAmount
-    const last = this.rainSoundLevel ?? 0
+  _updateAmbientSound() {
+    const levels = { raining: this.atmosphere.rainAmount }
+    const fm = this.freeMode
+    const listener = fm.isActive ? this[fm.followSlot] : this.p1
+    // 營火傳送換場景中（舊營火拿掉、人還沒放到新營火前）：物件聲維持原本的音量，聲音不會斷
+    const isWarping = this.warp?.phase === 'load'
+    this.props.forEach(prop => {
+      const { name } = prop.sound
+      if (!name || isWarping) return
+      const level = listener ? prop.getSoundLevel(listener.model.position) : 0
+      levels[name] = Math.max(levels[name] ?? 0, level)
+    })
+    // 這次沒出現的（換場景後營火不在了）降到 0；傳送換場景中維持原本的音量
+    this.ambientLevels ??= {}
+    Object.keys(this.ambientLevels).forEach(name => { levels[name] ??= isWarping ? this.ambientLevels[name] : 0 })
+    Object.entries(levels).forEach(([name, level]) => this._setAmbientLevel(name, level))
+  }
+
+  /** 只在音量變了一點以上才更新（Sound.setLoop 每次會重新開始淡入淡出） */
+  _setAmbientLevel(name, level) {
+    const last = this.ambientLevels[name] ?? 0
     if (Math.abs(level - last) < 0.02 && !(level === 0 && last !== 0)) return
-    this.rainSoundLevel = level
-    this.sound.setLoop('raining', level, this.weatherSoundFade)
+    this.ambientLevels[name] = level
+    this.sound.setLoop(name, level, name === 'raining' ? this.weatherSoundFade : this.propSoundFade)
   }
 
   /** 渲染後（GameCore hooks.onAfterRender）：還原成邏輯幀的姿勢，下一次推進從正確的狀態繼續 */

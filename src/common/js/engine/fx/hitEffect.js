@@ -3,7 +3,8 @@ import * as THREE from 'three'
 /**
  * HitEffect：打擊特效，放在命中點
  * 一次特效 = 閃光（瞬間亮起再縮小淡出）+ 火花粒子（往打擊方向噴出、受重力下墜）
- * 種類：一般命中 hit、重擊 heavy（重拳 / 絕招，火花數量與噴出速度是 hit 的 heavyRate 倍）、防禦住 block
+ * 種類：一般命中 hit、重擊 heavy（重拳 / 絕招，火花數量與噴出速度是 hit 的 heavyRate 倍）、防禦住 block、
+ *       強烈衝擊 impact（例如動力衝擊成功反擊：火花多很多、噴很遠、閃光很大，再加一圈往外擴散的光）
  *
  * 特效一律疊在最上層（不做深度測試）、不受場景的霧影響，命中點在身體裡也看得到
  * 時間用秒計算，由呼叫端傳入已乘上遊戲速度的 delta（頓幀期間特效照常播放，打擊感比較強）
@@ -20,6 +21,8 @@ export class HitEffect {
       presets: {
         hit: { color: 0xffa030, coreColor: 0xfff0c0, count: 18, speed: 3.5, size: 0.06, flashSize: 0.55, life: 0.35 },
         block: { color: 0x4fb0ff, coreColor: 0xe0f4ff, count: 12, speed: 2.5, size: 0.05, flashSize: 0.45, life: 0.25 },
+        // ringSize：往外擴散的光圈最後多大（公尺，0 = 沒有）
+        impact: { color: 0xffa83c, coreColor: 0xffe7b8, count: 90, speed: 7.5, size: 0.1, flashSize: 1.3, life: 0.8, ringSize: 2.2, ringOpacity: 0.55 },
       },
       heavyRate: 1.2, // 重擊（heavy）：樣式同 hit，火花數量與噴出速度（擴散距離）乘上這個倍率
       gravity: 6, // 火花往下掉的加速度（公尺 / 秒²）
@@ -50,9 +53,10 @@ export class HitEffect {
   /**
    * 在命中點產生一次特效
    * @param {THREE.Vector3} position 命中點（世界座標）
-   * @param {{ type?: 'hit' | 'heavy' | 'block', dir?: number }} options dir：打擊方向（世界座標 -1 / 1），火花往這邊噴
+   * @param {{ type?: 'hit' | 'heavy' | 'block' | 'impact', dir?: number, delay?: number }} options
+   *   dir：打擊方向（世界座標 -1 / 1），火花往這邊噴；delay：幾秒（遊戲時間）後才出現（例如等頓幀結束、慢動作開始才亮）
    */
-  spawn(position, { type = 'hit', dir = 1 } = {}) {
+  spawn(position, { type = 'hit', dir = 1, delay = 0 } = {}) {
     const preset = this._getPreset(type)
 
     const flash = new THREE.Sprite(this._createSpriteMaterial(this.glowTexture, preset.coreColor))
@@ -60,10 +64,21 @@ export class HitEffect {
     flash.renderOrder = 10
     this.scene.add(flash)
 
+    // 擴散光圈（impact）：一片很大的光暈從小放大、淡出，像衝擊波
+    let ring = null
+    if (preset.ringSize) {
+      ring = new THREE.Sprite(this._createSpriteMaterial(this.glowTexture, preset.color))
+      ring.position.copy(position)
+      ring.renderOrder = 9
+      this.scene.add(ring)
+    }
+
     const { points, velocities, lifeScales } = this._createSparks(position, preset, dir)
     this.scene.add(points)
 
-    this.bursts.push({ time: 0, life: preset.life, preset, flash, points, velocities, lifeScales, baseColor: new THREE.Color(preset.color) })
+    const isWaiting = delay > 0
+    ;[flash, ring, points].forEach(obj => { if (obj) obj.visible = !isWaiting })
+    this.bursts.push({ time: -delay, life: preset.life, preset, flash, ring, points, velocities, lifeScales, baseColor: new THREE.Color(preset.color) })
   }
 
   /** 推進 delta 秒（暫停時傳 0） */
@@ -71,12 +86,15 @@ export class HitEffect {
     if (!delta) return
     this.bursts = this.bursts.filter(burst => {
       burst.time += delta
+      if (burst.time < 0) return true // 還在等 delay
+      ;[burst.flash, burst.ring, burst.points].forEach(obj => { if (obj) obj.visible = true })
       const t = burst.time / burst.life
       if (t >= 1) {
         this._dispose(burst)
         return false
       }
       this._updateFlash(burst, t)
+      this._updateRing(burst, t)
       this._updateSparks(burst, delta, t)
       return true
     })
@@ -102,6 +120,14 @@ export class HitEffect {
     const grow = Math.min(1, t / 0.2)
     flash.scale.setScalar(preset.flashSize * (0.4 + 0.6 * (1 - (1 - grow) ** 2)))
     flash.material.opacity = Math.max(0, 1 - t * 2)
+  }
+
+  /** 擴散光圈：前 40% 時間從 20% 放大到 ringSize（先快後慢），一路淡出 */
+  _updateRing({ ring, preset }, t) {
+    if (!ring) return
+    const k = Math.min(1, t / 0.4)
+    ring.scale.setScalar(preset.ringSize * (0.2 + 0.8 * (1 - (1 - k) ** 3)))
+    ring.material.opacity = Math.max(0, 1 - t) ** 2 * (preset.ringOpacity ?? 0.9)
   }
 
   /** 火花：重力 + 減速；用頂點顏色變暗來淡出（疊加混色下黑色 = 看不見），每顆壽命略有不同 */
@@ -196,9 +222,13 @@ export class HitEffect {
   }
 
   /** 移除特效；貼圖是共用的，不 dispose */
-  _dispose({ flash, points }) {
+  _dispose({ flash, ring, points }) {
     this.scene.remove(flash)
     flash.material.dispose()
+    if (ring) {
+      this.scene.remove(ring)
+      ring.material.dispose()
+    }
     this.scene.remove(points)
     points.geometry.dispose()
     points.material.dispose()

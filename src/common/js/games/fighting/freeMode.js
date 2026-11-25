@@ -356,6 +356,20 @@ export class FreeMode {
     return true
   }
 
+  /** 直接把人放到 pos（換場景傳送）：地面高度、防卡住的記錄（上一個位置、安全位置）、補間記錄一起重設 */
+  teleport(slot, pos) {
+    const fighter = this.fighters[slot]
+    const st = this.states[slot]
+    if (!fighter || !st) return
+    fighter.model.position.copy(pos)
+    fighter.groundY = pos.y
+    st.lastPos = pos.clone()
+    st.safe = { pos: pos.clone(), groundY: pos.y }
+    st.stuckTime = 0
+    fighter.syncCapturedPosition()
+    if (slot === this.followSlot) this.cameraGroundY = pos.y
+  }
+
   /** 起身：坐好之後才可以（坐下途中按無效）；播完回到自由移動 */
   standUp(slot) {
     const st = this.states[slot]

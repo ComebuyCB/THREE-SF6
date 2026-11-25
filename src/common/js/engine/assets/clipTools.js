@@ -100,3 +100,47 @@ export function makeInPlace(source, { isRootMotion = false, isFlattenRise = fals
   }
   return clip
 }
+
+/**
+ * 動作某一段身體朝向偏掉時轉正：整個身體（臀部）繞人物中心的 Y 軸多轉幾度
+ * keys：[[幀, 度], ...]（由小到大），中間平滑過渡，頭尾之外維持第一個 / 最後一個值；度數正值 = 往人物的左手邊轉
+ * 要在 makeInPlace 之後做（臀部已經固定在原地）；rootMotion 不變，人物前進的路線不受影響
+ */
+export function turnClip(source, keys, fps = 60) {
+  const clip = source.clone()
+  if (source.rootMotion) clip.rootMotion = source.rootMotion
+  const getAngle = time => {
+    const f = time * fps
+    const next = keys.findIndex(([frame]) => frame > f)
+    if (next === 0) return THREE.MathUtils.degToRad(keys[0][1])
+    if (next === -1) return THREE.MathUtils.degToRad(keys[keys.length - 1][1])
+    const [f0, d0] = keys[next - 1]
+    const [f1, d1] = keys[next]
+    return THREE.MathUtils.degToRad(THREE.MathUtils.lerp(d0, d1, THREE.MathUtils.smoothstep(f, f0, f1)))
+  }
+  const up = new THREE.Vector3(0, 1, 0)
+  const turn = new THREE.Quaternion()
+  const q = new THREE.Quaternion()
+  const v = new THREE.Vector3()
+  clip.tracks.forEach(track => {
+    const isRotation = track.name.endsWith('Hips.quaternion')
+    if (!isRotation && !track.name.endsWith('Hips.position')) return
+    const size = isRotation ? 4 : 3
+    // 片段的 key 可能比過渡段稀疏：每個遊戲幀補一個 key，轉動才會平順
+    const count = Math.round(clip.duration * fps) + 1
+    const interpolant = track.createInterpolant()
+    const times = new Float32Array(count)
+    const values = new Float32Array(count * size)
+    for (let i = 0; i < count; i++) {
+      const time = Math.min(i / fps, clip.duration)
+      times[i] = time
+      const value = interpolant.evaluate(time)
+      turn.setFromAxisAngle(up, getAngle(time))
+      if (isRotation) q.fromArray(value).premultiply(turn).toArray(values, i * size)
+      else v.fromArray(value).applyQuaternion(turn).toArray(values, i * size)
+    }
+    track.times = times
+    track.values = values
+  })
+  return clip
+}

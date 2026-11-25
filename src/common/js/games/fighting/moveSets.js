@@ -36,11 +36,18 @@
  * clash：打在對手也有 clash 的招式的霸體上時的演出，見 DI
  * hitstopTaken：出這招的期間被對手打中（含霸體擋下）時，頓幀乘上這個倍率（對手是絕招時本來就不頓幀）；對撞用 clash.hitstopRate
  * onTarget：{ attack, stand, block } 打到不同狀態的對手時覆蓋的數據：attack = 對手出招中、block = 被防禦、stand = 其他狀態
- * crumple：{ delay, soundFrame } 打中站著的對手（不是打飛）：受擊動作播 delay 幀後接倒地動畫（main.js anims.death）
+ * hitEffect：打中時的打擊特效種類（engine/fx/hitEffect.js：'hit' / 'heavy' / 'impact'）；沒填 = 一般 hit，絕招和 heavyHitEffect 是 heavy
+ * hitEffectDelay：打擊特效在頓幀結束後再過幾幀（遊戲幀，放慢時跟著變慢）才出現；沒填 = 打中當下
+ * hitAnim：對手受擊時改播這個動作（main.js anims 的 key，例如 'headHit'）；沒填 = 一般的 hit
+ * crumple：{ delay, soundFrame } 打中站著的對手（不是打飛）：受擊動作播 delay 幀後接倒地動畫（main.js anims.death）；delay 沒填 = 受擊動作（hitAnim）整段播完
  *   整段算站立受擊（有受擊框、可以追打，身體受擊框維持站立高度），沒被追打就倒到底、再無敵起身；soundFrame = 倒地動畫第幾幀播倒地音效
  * closeUp：打中（不含防禦、霸體）時鏡頭拉近到攻擊方後下方特寫（main.js closeUp，格鬥模式才有）；把對手打飛時不特寫
  * slowMo：打中時遊戲放慢（main.js slowMo）；把對手打飛時不放慢
  * glow：{ color, strength, to, fade } 出招時全身發光：第 1 ~ to 幀亮著，之後 fade 幀淡出；strength 0 ~ 1
+ * aura：{ color, to, fade, thickness } 出招時包在模型外圍的氣場（engine/render/aura.js：外殼光暈、火花，第 1 幀光環爆發），模型本身不變色
+ *   亮到第 to 幀（不填 = 到招式結束前 fade 幀），再用 fade 幀淡出；thickness = 外殼離身體多遠（公尺，不填 = Aura 的預設 0.035）
+ *   burstOnly = 沒有外殼，只在出招瞬間爆發一次（火花、光環、閃光；絕招凍結中也會馬上噴；to / fade / thickness 不用）；sparkLife = 火花壽命倍率
+ *   絕招（super）沒寫 aura 時自動用 SUPER_AURA；寫 aura: null = 不要
  * desc：招式表（moveList.js）的說明
  * command：{ dir, button } 方向指令：下 → 前（'forward'）/ 下 → 後（'back'）+ 攻擊鍵（'light' / 'medium' / 'heavy'），見 motionInput.js
  * sgCost：（絕招）消耗幾格 SG，不足不能出；沒填 = 1
@@ -59,6 +66,7 @@
  *   hit = 擊中、block = 被防禦；dg / sg = 自己、oppDg / oppSg = 對手；負數 = 扣；沒填的欄位 = 0
  * blockStun：被防禦時對手的防禦硬直幀數；沒填用人物的 blockStun
  * hitRadius：攻擊判定球半徑（公尺）；沒填用人物的 hitRadius
+ * hitScaleY：攻擊判定球上下（Y 軸）拉長幾倍，變成橢圓球（例如 1.5）；沒填 = 正圓球
  * hitLimb：{ bones, width, extend } 攻擊判定改成沿著肢體方向的長方體（取代判定球）
  *   bones：由根部到末端的骨頭，每相鄰兩根一個長方體，最後一段再往外延伸 extend 公尺；截面寬 width 公尺
  *   腿：UpLeg（大腿根）→ Leg（膝蓋）→ Foot（腳踝）；手：Arm（肩）→ ForeArm（手肘）→ Hand（手腕），前面加 Left / Right
@@ -185,22 +193,25 @@ export const BASE_MOVE_SET = {
 
   // 動力系統
   drive: {
-    // 動力衝擊：前搖 34 幀有霸體（擋 2 次非絕招攻擊，第 3 次照常受擊）、第 35 ~ 44 幀攻擊判定、後搖 40 幀
-    // 動作暫用 MmaKick_H（裁掉前 6 幀，第 35 ~ 44 幀剛好踢到）：換動作時改 main.js anims.DI、trimAnims.DI 與下面的 hitLimb / hitBones
+    // 動力衝擊：前搖 35 幀有霸體（擋 2 次非絕招攻擊，第 3 次照常受擊）、第 36 ~ 41 幀攻擊判定（6 幀）、後搖 43 幀
+    // 動作暫用 MmaKick_H（裁掉前 6 幀，第 36 ~ 41 幀剛好踢到）：換動作時改 main.js anims.DI、trimAnims.DI 與下面的 hitBones
     DI: {
       name: '動力衝擊', desc: '前搖可以擋下非絕招的攻擊（變成白血）；打中出招中的對手會倒地', groundOnly: true, cancelAttack: true, dgCost: 6000,
-      length: 84, startup: 34, recovery: 40, hitStun: 75, blockStun: 46, hitstop: 10,
-      armor: { to: 34, hits: 2 }, hitstopTaken: 2,
-      glow: { color: 0xff9a2e, strength: 0.6, to: 44, fade: 20 }, // 全身發光（暫用，之後換特效）
+      length: 84, startup: 35, recovery: 43, hitStun: 75, blockStun: 46, hitstop: 10,
+      armor: { to: 35, hits: 2 }, hitstopTaken: 2,
+      aura: { color: 0xff9a2e, to: 41, fade: 20 }, // 外圍的氣場：啟動時光環 + 火花爆發，攻擊判定結束後淡出
+      sounds: [{ name: 'DI', frame: 2 }], // 啟動音效（音量見 main.js sounds.DI）；一般招式第 1 幀的音效不會播（只有絕招按下的瞬間會），用第 2 幀
       // 打在對手的動力衝擊霸體上（雙方都出動力衝擊）：頓幀 × hitstopRate，雙方搖 shakes 次（幅度 amplitude 公尺）、鏡頭晃 camera 公尺
       clash: { hitstopRate: 3, shakes: 3, amplitude: 0.3, camera: 0.12 },
       closeUp: true, slowMo: true, // 打中：特寫鏡頭、放慢；對撞也會特寫（給用霸體接住的那一方）
       hitShake: true, heavyHitEffect: true, knockback: 1.5, cameraShake: 0.05,
       // 對手出招中 = 只擊退 0.2、接倒地動畫；站立（出招、防禦以外）= 擊飛；防禦 = 擊退 1.5
-      onTarget: { attack: { knockback: 0.2, crumple: { delay: 10, soundFrame: 70 } }, stand: { launch: { distance: 3 } }, block: { knockback: 1.5 } },
+      // 打中出招中的對手（成功反擊）：火花換成誇張的 impact，受擊動作換成 headHit，整段播完再倒地
+      // 特效等頓幀結束、慢動作開始後 3 幀才亮（慢動作中爆開的打擊感）
+      onTarget: { attack: { knockback: 0.2, hitEffect: 'impact', hitEffectDelay: 3, hitAnim: 'headHit', crumple: { soundFrame: 70 } }, stand: { launch: { distance: 3 } }, block: { knockback: 1.5 } },
       gauge: { hit: { dg: 0, oppDg: 0, sg: 300, oppSg: 100 }, block: { dg: 0, oppDg: -3000, sg: 150, oppSg: 100 } },
-      advance: { from: 9, to: 34, distance: 1 },
-      hitLimb: { bones: ['RightUpLeg', 'RightLeg', 'RightFoot'], width: 0.25, extend: 0.12 },
+      advance: { from: 9, to: 35, distance: 1 },
+      hitBones: ['RightFoot'], hitScaleY: 1.5, // 判定球在腳踝，上下拉長 1.5 倍（打擊點在腳上）
     },
   },
 
@@ -235,7 +246,7 @@ export const BASE_MOVE_SET = {
       hitBones: ['LeftFoot', 'RightFoot'],
       sounds: [{ name: 'kick_ball_title', frame: 1 }],
     },
-    monkey_turn: {
+    monkey_yarn: {
       name: '猴子繞花線', desc: '往前旋身連打，打中擊飛', command: { dir: 'back', button: 'medium' }, sgCost: 2,
       startup: 17, recovery: 40, hitStun: 30,
       knockback: 0.25, launch: true,
@@ -273,12 +284,12 @@ export const BASE_MOVE_SET = {
       hitDamage: 400, hitDamages: [-1, -1, -1, -1, -1, -1, -1, -1, 1000], // 最後一下 1000
       gauge: { hit: { dg: 0, oppDg: 0, sg: 0, oppSg: 0 }, block: { dg: 0, oppDg: 0, sg: 0, oppSg: 0 } },
       advance: { from: 2, to: 418, distance: 1.5 },
-      missCut: { judge: 1, after: 15, jumpTo: 340, soundAfter: 18 }, // 第 1 下沒打中：再播 15 幀後跳到第 350 幀播完；音效揮空後 18 幀中斷
+      missCut: { judge: 1, after: 60, jumpTo: 347, soundAfter: 62 }, // 第 1 下沒打中：再播 15 幀後跳到第 350 幀播完；音效揮空後 18 幀中斷
       hitBones: ['RightHand'], hitRadius: 0.25, // 攻擊判定球放大（預設 0.18）
       animStart: 'zoomOut', faceCamera: true,
       cameraShake: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.1, 0.8],
       hitCamera: { angle: 60, height: 0.2, lookAhead: { x: 0.3, y: -0.3 } },
-      sounds: [{ name: 'shake_head_title', frame: 1 }, { name: 'shake_head', frame: 2, delay: 0.35 }], cutSounds: true,
+      sounds: [{ name: 'shake_head_title', frame: 1 }, { name: 'shake_head', frame: 4, delay: 0.35 }], cutSounds: true,
     },
     dodge_step: {
       name: '閃身步', desc: '穿過對手到背後，打中就轉身再穿，最後一下擊飛', command: { dir: 'forward', button: 'light' }, sgCost: 1,
@@ -297,6 +308,9 @@ export const BASE_MOVE_SET = {
 }
 
 export const MOVE_CATEGORIES = ['normal', 'tc', 'drive', 'air', 'special', 'super']
+
+/** 絕招預設的氣場（招式沒寫 aura 時）：沒有外殼，出招瞬間爆發一次（火花、光環、閃光）；顏色同絕招演出照在人物身上的聚光燈 */
+export const SUPER_AURA = { color: 0xffc040, burstOnly: true, sparkLife: 1.5 }
 
 /**
  * 以 base 為底套上 patch，回傳新的招式表（不改動 base）
@@ -329,6 +343,7 @@ export function flattenMoveSet(moveSet) {
     Object.entries(moveSet?.[category] || {}).forEach(([key, move]) => {
       if (moves[key]) console.warn(`招式 key 重複：${key}`)
       moves[key] = { ...structuredClone(move), category, ...(category === 'super' && { isSuper: true }) }
+      if (category === 'super' && move.aura === undefined) moves[key].aura = { ...SUPER_AURA } // 絕招預設有氣場
       if (category === 'air' && move.replaces) airMoves[move.replaces] = key
       if (category === 'tc') move.from?.forEach(from => (derives[from] ??= []).push({ to: key, by: move.by ?? [], on: move.on ?? 'contact', cut: move.cut }))
     })

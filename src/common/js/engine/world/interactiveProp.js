@@ -18,6 +18,8 @@ export class InteractiveProp {
       scale: 1,
       height: null, // 有給：縮放到這個高度（公尺），底部貼地（scale 不用）
       radius: 1.8, // 互動距離（公尺，水平距離）
+      // 物件的循環聲（Sound 的名稱，null = 沒有）：離聽的人 near 公尺內最大聲，越遠越小，far 公尺外聽不到
+      sound: { name: null, near: 2, far: 20 },
       onMaterial: null, // (material) → 每個材質載入時呼叫（例如套上跟場景一樣的霧：黑暗霧範圍外看不見）
       promptEl: '#interactPrompt',
       promptHeight: 0.3, // 提示在物件頂端上方多高（公尺）
@@ -58,6 +60,7 @@ export class InteractiveProp {
     this.top = 1 // 物件高度（公尺，載入後量）
     this.glowLevel = 0 // 0 ~ 1：目前發亮程度
     this.isShowingPrompt = false
+    this.isFogged = true // 被霧蓋住（setFogged）
     this.isLoaded = false
     this.isDisposed = false
     this._screen = new THREE.Vector3()
@@ -68,7 +71,7 @@ export class InteractiveProp {
 
   init() {
     this.scene.add(this.group)
-    this.load()
+    this.loading = this.load() // 載入完成（成功或失敗）；等它就知道可以顯示了
   }
 
   async load() {
@@ -86,6 +89,7 @@ export class InteractiveProp {
           this.materials.push({ material, emissive: material.emissive.clone(), intensity: material.emissiveIntensity, hasMap: !!material.emissiveMap })
         })
       })
+      this._applyFog()
       if (this.height) this._fitHeight(gltf.scene)
       this.group.add(gltf.scene)
       this.group.updateMatrixWorld(true)
@@ -122,6 +126,19 @@ export class InteractiveProp {
     return target
   }
 
+  /**
+   * 這個物件的聲音在 point（聽的人，例如鏡頭跟隨的人）聽起來多大聲：0 ~ 1
+   * near 內 1、far 外 0，中間平滑變小
+   */
+  getSoundLevel(point) {
+    const { name, near, far } = this.sound
+    if (!name) return 0 // 模型還沒載入也照位置算（換場景時聲音不會斷一下）
+    const p = this.group.position
+    const dist = Math.hypot(point.x - p.x, point.y - p.y, point.z - p.z)
+    const t = THREE.MathUtils.clamp((far - dist) / (far - near), 0, 1)
+    return t * t // 遠處掉得快一點，聽起來比較自然
+  }
+
   /** 人物（腳底）是否在互動距離內 */
   isNear(fighter) {
     if (!this.isLoaded || !fighter) return false
@@ -132,9 +149,11 @@ export class InteractiveProp {
   /**
    * 每個畫面更新：動畫、發亮、提示
    * @param {number} delta 遊戲時間（秒）
-   * @param {{ isActive: boolean, label: string, camera: THREE.Camera }} focus isActive = 要發亮、顯示提示；label = 提示文字；camera = 算提示的螢幕位置
+   * @param {{ isActive: boolean, label: string, camera: THREE.Camera, screen: { x: number, y: number } | null, isDisabled: boolean }} focus
+   *   isActive = 要發亮、顯示提示；label = 提示文字；camera = 算提示的螢幕位置
+   *   screen = 提示固定在螢幕上的位置（%，例如第一人稱放在準心下方），不跟著物件；isDisabled = 提示變灰（現在按了沒用）
    */
-  update(delta, { isActive = false, label = '', camera = null } = {}) {
+  update(delta, { isActive = false, label = '', camera = null, screen = null, isDisabled = false } = {}) {
     this.mixer?.update(delta)
     if (!this.isLoaded) return
 
@@ -143,7 +162,14 @@ export class InteractiveProp {
     this.glowLevel += (target - this.glowLevel) * (delta > 0 ? k : 1)
     if (Math.abs(target - this.glowLevel) < 0.001) this.glowLevel = target
     this._applyGlow(this.glowLevel)
-    this._updatePrompt(isActive && !!camera, label, camera)
+    this._updatePrompt(isActive && !!camera, label, camera, screen, isDisabled)
+  }
+
+  /** 要不要被霧蓋住（例如正坐著的營火：黑暗中也看得見）；模型還沒載入時先記著 */
+  setFogged(isOn) {
+    if (this.isFogged === isOn) return
+    this.isFogged = isOn
+    this._applyFog()
   }
 
   /** 從場景拿掉（換場景時） */
@@ -155,6 +181,17 @@ export class InteractiveProp {
   }
 
   // internal
+
+  _applyFog() {
+    this.model?.traverse(obj => {
+      if (!obj.isMesh) return
+      ;[obj.material].flat().forEach(material => {
+        if (material.fog === this.isFogged) return
+        material.fog = this.isFogged
+        material.needsUpdate = true
+      })
+    })
+  }
 
   /** 縮放到 height 公尺高、底部貼地（模型原點不在底部也沒關係） */
   _fitHeight(object) {
@@ -181,11 +218,19 @@ export class InteractiveProp {
     })
   }
 
-  /** 按鍵提示：物件頂端上方，換算成螢幕座標寫進 --x / --y */
-  _updatePrompt(isActive, label, camera) {
+  /** 按鍵提示：物件頂端上方換算成螢幕座標（或固定在 screen），寫進 --x / --y */
+  _updatePrompt(isActive, label, camera, screen, isDisabled) {
     if (!this.promptEl) return
     if (!isActive) {
       if (this.isShowingPrompt) this._setPromptVisible(false)
+      return
+    }
+    this.promptEl.classList.toggle('is_disabled', isDisabled)
+    if (screen) {
+      this._setPromptVisible(true)
+      this.promptEl.style.setProperty('--x', `${screen.x}%`)
+      this.promptEl.style.setProperty('--y', `${screen.y}%`)
+      if (this.promptTextEl && this.promptTextEl.textContent !== label) this.promptTextEl.textContent = label
       return
     }
     const p = this.getPromptPoint(this._screen)

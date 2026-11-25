@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js'
 import { OBB } from 'three/addons/math/OBB.js'
+import { Aura } from '../../engine/render/aura.js'
 import { BASE_MOVE_SET, flattenMoveSet } from './moveSets.js'
 
 // 遊戲邏輯固定 60 幀 / 秒，幀數表與招式數據都以此為單位
@@ -39,6 +40,7 @@ const HURTBOX_PARTS = [
 ]
 
 const WAKE_TURN_FRAMES = 8 // 起身最後幾幀先轉向對手
+const _scaledBox = new THREE.Box3() // _touchesHitSphere 用
 const LIMB_SEGMENTS = 3 // hitLimb 最多幾段（bones 最多 4 根骨頭）
 
 const COLOR = {
@@ -236,9 +238,12 @@ export class Fighter {
     this.rushAttack = null // 衝刺取消的停頓 / 不能出招期間按的招式，可以出招的第一幀出（絕招由 main.js 開演出）
     this.usedRush = false // 這一幀用掉了衝刺取消鍵（main.js 清掉記住的輸入）
     this.crumple = null // 這次受擊會倒地（招式的 crumple），null = 一般受擊
+    this.hitAnim = null // 這次受擊播的動作（招式的 hitAnim，例如 headHit），null = 一般的 hit
     this.isCrumpleGetUp = false // 倒地後起身中（down 狀態，倒地動畫倒著播）
     this.armorHits = 0 // 這次出招霸體已經擋了幾下
     this.isMoveGlowing = false // 招式的全身發光（move.glow）亮著
+    this.aura = null // 包在外圍的氣場特效（move.aura；engine/render/aura.js），模型建立時一起建立
+    this.isMoveAura = false // 招式的氣場（move.aura）開著
     this.recoveryCut = 0 // chainCancel：這次出招的收招少了幾幀
     this.hurtboxParts = [] // { box, bones, pad, helper }
     this.hitParts = [] // { name, sphere, bone, helper }：所有招式用到的骨頭，出招時只啟用該招的部分
@@ -260,6 +265,8 @@ export class Fighter {
     this.setDebugVisible(this.showDebug)
     this.setSkeletonVisible(this.showSkeleton)
     this.scene.add(this.model, this.debugGroup)
+    // 氣場特效先建好（裡面的點光源之後才加會讓所有材質重新編譯，第一次出招時畫面卡一下）
+    this.aura = new Aura({ scene: this.scene, model: this.model, height: this.characterHeight })
     this._applyFacing()
     // state 初始值就是 idle，要強制播放，否則 _setState 會當作沒變而跳過
     this._setState('idle', true)
@@ -495,6 +502,7 @@ export class Fighter {
     this._checkPassFlow()
     this._updatePushback()
     this._updateMoveGlow()
+    this._updateMoveAura()
     this._updateFlash()
     this._updateGlow()
   }
@@ -634,11 +642,13 @@ export class Fighter {
     const activeBones = this._getActiveHitBones()
     const move = this.getCurrentMove()
     const radius = move?.hitRadius ?? this.hitRadius
+    const scaleY = move?.hitScaleY ?? 1
     this.hitParts.forEach(part => {
       part.bone.getWorldPosition(part.sphere.center)
       part.sphere.radius = radius
       part.helper.position.copy(part.sphere.center)
-      part.helper.scale.setScalar(radius / this.hitRadius) // 判定球網格是用預設半徑建的
+      const s = radius / this.hitRadius // 判定球網格是用預設半徑建的
+      part.helper.scale.set(s, s * scaleY, s) // hitScaleY：上下拉長的橢圓球
       part.helper.visible = isHitActive && !move?.hitLimb && activeBones.includes(part.name)
     })
     this._updateLimbHit(move?.hitLimb, isHitActive)
@@ -681,7 +691,21 @@ export class Fighter {
     if (this.getCurrentMove()?.hitLimb) return this._getLimbHits().some(({ obb }) => hurts.some(hurt => obb.intersectsBox3(hurt.box)))
     return this.hitParts
       .filter(hit => activeBones.includes(hit.name))
-      .some(hit => hurts.some(hurt => hurt.box.intersectsSphere(hit.sphere)))
+      .some(hit => hurts.some(hurt => this._touchesHitSphere(hurt.box, hit.sphere)))
+  }
+
+  /**
+   * 受擊框（Box3）是否碰到攻擊判定球；招式有 hitScaleY 時判定球是上下拉長的橢圓球：
+   * 把受擊框以球心為準在 Y 方向縮成 1 / hitScaleY，再跟原本的正圓球比（等同橢圓球對原本的框）
+   */
+  _touchesHitSphere(box, sphere) {
+    const scaleY = this.getCurrentMove()?.hitScaleY ?? 1
+    if (scaleY === 1) return box.intersectsSphere(sphere)
+    const cy = sphere.center.y
+    _scaledBox.copy(box)
+    _scaledBox.min.y = cy + (box.min.y - cy) / scaleY
+    _scaledBox.max.y = cy + (box.max.y - cy) / scaleY
+    return _scaledBox.intersectsSphere(sphere)
   }
 
   /**
@@ -701,7 +725,7 @@ export class Fighter {
       const activeBones = this._getActiveHitBones()
       for (const hit of this.hitParts) {
         if (!activeBones.includes(hit.name)) continue
-        const hurt = hurts.find(h => h.box.intersectsSphere(hit.sphere))
+        const hurt = hurts.find(h => this._touchesHitSphere(h.box, hit.sphere))
         if (hurt) return hurt.box.clampPoint(hit.sphere.center, point)
       }
     }
@@ -745,6 +769,7 @@ export class Fighter {
   takeHit(fromX, move, isLaunch = false, isForceStand = false) {
     this.grabFrame = 0
     this.crumple = null
+    this.hitAnim = move.hitAnim && this.actions[move.hitAnim] ? move.hitAnim : null
     this.isCrumpleGetUp = false
     this.hangFrames = 0 // 上一下的空中停頓作廢（空中普通命中由 Combat 重新呼叫 hangInAir）
     this.flashFrame = this.flashFrames
@@ -802,8 +827,10 @@ export class Fighter {
     this.hitStunFrames = move.hitStun
     // crumple：受擊動作播 delay 幀後接倒地動畫（見 _advanceState）
     if (move.crumple && this.actions.death && !this.juggle) {
-      this.crumple = move.crumple
-      this.hitStunFrames = move.crumple.delay + this.getClipLength('death')
+      // delay 沒填：受擊動作（hitAnim）整段播完才倒地
+      const delay = move.crumple.delay ?? (this.hitAnim ? this.getClipLength(this.hitAnim) : 10)
+      this.crumple = { ...move.crumple, delay }
+      this.hitStunFrames = delay + this.getClipLength('death')
     }
     if (this.juggle) {
       this.juggleStartFrame = this.juggle.restart // 空中挨打：之後每下從 restart 幀重播飛走動畫
@@ -905,6 +932,25 @@ export class Fighter {
     this.scene.remove(this.model, this.debugGroup)
     this.materials.forEach(({ material }) => material.dispose())
     this.xrayMeshes?.[0]?.material.dispose()
+    this.aura?.dispose()
+  }
+
+  /**
+   * 氣場特效（火花、光環）每個畫面推進；在人物擺好這個畫面的姿勢之後、渲染之前呼叫
+   * 只爆發一次的氣場（aura.burstOnly，例如絕招）在這裡觸發：換到這招的瞬間噴火花，不用等招式推進（演出凍結中也會馬上噴）
+   */
+  updateAura(delta) {
+    const a = this.aura
+    if (!a) return
+    const aura = this.getCurrentMove()?.aura
+    const key = aura?.burstOnly ? this.currentMove : null
+    if (key && key !== this.auraBurstMove) {
+      if (aura.color != null) a.setColor(aura.color)
+      a.setLevel(0) // 上一招的外殼（例如動力衝擊）馬上收掉
+      a.burst({ sparkLife: aura.sparkLife })
+    }
+    this.auraBurstMove = key
+    a.update(delta)
   }
 
   /**
@@ -925,7 +971,7 @@ export class Fighter {
       })
       this.xrayMeshes = []
       this.model.traverse(obj => {
-        if (!obj.isSkinnedMesh || obj.userData.isXray) return
+        if (!obj.isSkinnedMesh || obj.userData.isXray || obj.userData.isEffect) return
         const xray = new THREE.SkinnedMesh(obj.geometry, material)
         xray.bind(obj.skeleton, obj.bindMatrix)
         xray.userData.isXray = true
@@ -951,7 +997,7 @@ export class Fighter {
     if (!this.model || this.isFogged === isOn) return
     this.isFogged = isOn
     this.model.traverse(obj => {
-      if (!obj.isMesh || obj.userData.isXray) return
+      if (!obj.isMesh || obj.userData.isXray || obj.userData.isEffect) return
       ;[obj.material].flat().forEach(material => {
         if (patch && !material.userData.isFogPatched) {
           patch(material)
@@ -1635,8 +1681,9 @@ export class Fighter {
       actionKey = this.currentMove
     } else if (state === 'hit') {
       this.stateLength = this.hitStunFrames
+      if (this.hitAnim) actionKey = this.hitAnim // 招式指定的受擊動作（例如被動力衝擊反擊的 headHit）
       if (this.juggle && this.actions.fly) actionKey = 'fly' // 被吸附在空中挨打：播飛走動畫
-      if (!this.actions.hit) actionKey = 'idle'
+      if (!this.actions[actionKey]) actionKey = 'idle'
     } else if (state === 'block') {
       this.stateLength = this.blockStunFrames
       if (!this.actions.block) actionKey = 'idle'
@@ -2232,6 +2279,35 @@ export class Fighter {
     const isOn = k > 0
     if (this.glowFrame <= 0 && (isOn || this.isMoveGlowing)) this._applyGlow(isOn ? k * glow.strength : 0, glow?.color)
     this.isMoveGlowing = isOn
+  }
+
+  /**
+   * 招式的氣場（move.aura）：出招第 1 幀爆發（光環、火花、閃光），亮到第 to 幀（不填 = 招式結束前 fade 幀），再用 fade 幀淡出；招式結束、被打斷就停
+   * 包在模型外圍（外殼光暈 + 火花），模型本身不變色；thickness = 外殼大小
+   */
+  _updateMoveAura() {
+    if (!this.aura) return
+    const aura = this.getCurrentMove()?.aura
+    if (aura?.burstOnly) {
+      // 只爆發一次的氣場由 updateAura 觸發
+      this.isMoveAura = false
+      this.auraMoveKey = null
+      return
+    }
+    const fade = Math.max(1, aura?.fade ?? 0)
+    const to = aura?.to ?? this.stateLength - fade
+    const k = aura ? Math.min(1, Math.max(0, 1 - (this.moveFrame - to) / fade)) : 0
+    const isOn = k > 0
+    const key = isOn ? this.currentMove : null
+    // 換了一招（含氣場招式直接接氣場招式）就重新爆發
+    if (isOn && key !== this.auraMoveKey) {
+      if (aura.color != null) this.aura.setColor(aura.color)
+      this.aura.setThickness(aura.thickness)
+      this.aura.burst()
+    }
+    this.aura.setLevel(k)
+    this.isMoveAura = isOn
+    this.auraMoveKey = key
   }
 
   _applyGlow(k, color = this.rush.glowColor) {
